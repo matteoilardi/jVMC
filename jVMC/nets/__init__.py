@@ -4,5 +4,6 @@ from jVMC.nets.cnn import *
 from jVMC.nets.ffn import *
 from jVMC.nets.rnn1d_general import *
 from jVMC.nets.rnn2d_general import *
+from jVMC.nets.transformer import *
 from jVMC.nets.sym_wrapper import *
 from jVMC.nets.two_nets_wrapper import *
