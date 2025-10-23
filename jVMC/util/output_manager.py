@@ -176,8 +176,19 @@ class OutputManager:
                     if not groupname in f["/"]:
                         f.create_group("/" + groupname)
 
-                print(data.shape)
                 f.create_dataset("/" + groupname + "/" + name, data=np.array(data))
+
+    def write_attribute(self, name, value, groupname="/", mpiRank=0):
+        
+        if mpi.rank == mpiRank:
+
+            with h5py.File(self.fn, "a") as f:
+
+                if not groupname == "/":
+                    if not groupname in f["/"]:
+                        f.create_group("/" + groupname)
+
+                f["/" + groupname].attrs[name] = value
 
     def start_timing(self, name):
 
