@@ -243,6 +243,19 @@ class SampledObs():
             other = self
         
         return mpi.global_sum( _covar_helper(self._data, other._data)[:, None,...]  )
+
+    
+    def covar_to_host(self, other=None):
+        """Returns the covariance as a numpy array on the host.
+
+        Args:
+            * ``other`` [optional]: Another instance of `SampledObs`.
+        """
+
+        if other is None:
+            other = self
+        
+        return mpi.global_sum( _covar_helper(self._data, other._data)[:, None,...], to_device=False  )
     
 
     def var(self):

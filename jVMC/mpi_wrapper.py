@@ -111,7 +111,7 @@ def first_sample_id():
     return firstSampleId
 
 
-def global_sum(data):
+def global_sum(data, to_device: bool = True):
     """ Computes the sum of input data across MPI processes and device/batch dimensions.
 
     On each MPI process the input data is assumed to be a ``jax.numpy.array`` with a leading
@@ -144,7 +144,7 @@ def global_sum(data):
     communicationTime += time.perf_counter() - t0
 
     # return jnp.array(res)
-    return jax.device_put(res, global_defs.myDevice)
+    return jax.device_put(res, global_defs.myDevice) if to_device else res
 
 
 def global_mean(data, p):
