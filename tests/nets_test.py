@@ -6,9 +6,71 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.random as random
 import jax.numpy as jnp
+from jax.tree_util import tree_flatten
 import numpy as np
 
 import jVMC.util.symmetries as symmetries
+
+class TestCpxRBM(unittest.TestCase):
+
+    def test_cpx_rbm_ti_1d(self):
+        rbm = nets.CpxRBM_TI(density=3, bias=True)
+        params = rbm.init(random.PRNGKey(0), jnp.zeros((5,), dtype=np.int32))
+
+        flatParams = tree_flatten(params["params"])[0]
+        numParams = sum(p.size for p in flatParams)
+        self.assertEqual(numParams, 3*5 + 3)
+
+        S0 = jnp.pad(jnp.array([1, 0, 1, 1, 0]), (0, 4), 'wrap')
+        S = jnp.array(
+            [S0[i:i + 5]for i in range(5)]
+        )
+        psiS = jax.vmap(lambda s: rbm.apply(params, s))(S)
+        psiS = psiS - psiS[0]
+
+        self.assertTrue(jnp.max(jnp.abs(psiS)) < 1e-12)
+
+
+    def test_cpx_rbm_ti_2d(self):
+        rbm = nets.CpxRBM_TI(density=3, bias=True)
+        params = rbm.init(random.PRNGKey(0), jnp.zeros((4, 4), dtype=np.int32))
+
+        flatParams = tree_flatten(params["params"])[0]
+        numParams = sum(p.size for p in flatParams)
+        self.assertEqual(numParams, 3*4*4 + 3)
+
+        S0 = jnp.array(
+            [[1, 0, 1, 1],
+             [0, 1, 1, 1],
+             [0, 0, 1, 0],
+             [1, 0, 0, 1]]
+        )
+        S0 = jnp.pad(S0, [(0, 3), (0, 3)], 'wrap')
+        S = jnp.array(
+            [S0[i:i + 4, j:j + 4] for i in range(4) for j in range(4)]
+        )
+        psiS = jax.vmap(lambda s: rbm.apply(params, s))(S)
+        psiS = psiS - psiS[0]
+
+        self.assertTrue(jnp.max(jnp.abs(psiS)) < 1e-12)
+
+
+    def test_cpx_rbm_ti1d_var(self):
+        rbm = nets.CpxRBM_TI1d_Var(density=3, bias=True)
+        params = rbm.init(random.PRNGKey(0), jnp.zeros((5,), dtype=np.int32))
+
+        flatParams = tree_flatten(params["params"])[0]
+        numParams = sum(p.size for p in flatParams)
+        self.assertEqual(numParams, 3*5 + 3)
+
+        S0 = jnp.pad(jnp.array([1, 0, 1, 1, 0]), (0, 4), 'wrap')
+        S = jnp.array(
+            [S0[i:i + 5]for i in range(5)]
+        )
+        psiS = jax.vmap(lambda s: rbm.apply(params, s))(S)
+        psiS = psiS - psiS[0]
+
+        self.assertTrue(jnp.max(jnp.abs(psiS)) < 1e-12)
 
 
 class TestCNN(unittest.TestCase):
