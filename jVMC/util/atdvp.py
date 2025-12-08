@@ -9,6 +9,7 @@ from jVMC.stats import SampledObs
 from abc import ABC, abstractmethod
 from functools import partial
 import warnings
+from collections import namedtuple
 
 
 def expand_masked(a: np.ndarray, mask: np.ndarray):
@@ -17,6 +18,9 @@ def expand_masked(a: np.ndarray, mask: np.ndarray):
     out = np.zeros_like(mask, dtype=a.dtype)
     out[mask] = a
     return out
+
+Metadata = namedtuple("Metadata", ["lite", "mask", "importanceOnParams", "importanceOffParams"])
+"""Used to bundle step metadata in atVMC"""
 
 
 class TDVPBase(ABC):
@@ -187,16 +191,11 @@ class aTDVP(TDVPBase):
                 lite = self.calc_lite(subS, subUpdate)
                 importanceOnParams = aTDVP.calc_importance_on_params(subS, subUpdate)
                 importanceOffParams = aTDVP.calc_importance_off_params(invSubS, subUpdate, S, F, mask)
-                metadata = {
-                    "lite": lite, 
-                    "mask": mask,
-                    "importanceOnParams": importanceOnParams,
-                    "importanceOffParams": importanceOffParams,
-                }
+                metadata = Metadata(lite, mask, importanceOnParams, importanceOffParams)
         
                 # Calculate mask for the next iteration
                 self.nextMask = self.switch_off_params(metadata, subS, subF) if lite < self.liteCutoff else self.switch_on_params(metadata)
-                self.metadata = metadata
+                self.metadata = metadata._asdict()
     
             update = expand_masked(subUpdate, mask)
 
@@ -219,10 +218,10 @@ class aTDVP(TDVPBase):
         
         return S, F
 
-    def switch_off_params(self, metadata: dict, subS: np.ndarray, subF: np.ndarray) -> np.ndarray[bool]:
-        lite = metadata["lite"]
-        mask = metadata["mask"]
-        importanceOnParams = metadata["importanceOnParams"]
+    def switch_off_params(self, metadata, subS: np.ndarray, subF: np.ndarray) -> np.ndarray[bool]:
+        lite = metadata.lite
+        mask = metadata.mask
+        importanceOnParams = metadata.importanceOnParams
         nActive = importanceOnParams.shape[0]
 
         if nActive == 1:
@@ -280,12 +279,12 @@ class aTDVP(TDVPBase):
         return expand_masked(newSubMask, mask)
 
 
-    def switch_on_params(self, metadata: dict) -> np.ndarray[bool]:
-        lite = metadata["lite"]
-        mask = metadata["mask"]
-        importanceOffParams = metadata["importanceOffParams"]
+    def switch_on_params(self, metadata) -> np.ndarray[bool]:
+        lite = metadata.lite
+        mask = metadata.mask
+        importanceOffParams = metadata.importanceOffParams
 
-        if importanceOffParams is None:
+        if importanceOffParams.size == 0:
             return mask
 
         nNonActive = importanceOffParams.shape[0]
@@ -295,7 +294,7 @@ class aTDVP(TDVPBase):
 
         if self.paramImportanceCutoff is not None:
             # Determine which currently active parameters should be switched off because of low importance
-            prevMaskImportant = expand_masked(metadata["importanceOnParams"], mask) > self.paramImportanceCutoff
+            prevMaskImportant = expand_masked(metadata.importanceOnParams, mask) > self.paramImportanceCutoff
             # Determine how many inactive parameters should be excluded from activation because of low importance
             nIrrelevant = np.searchsorted(paramImportanceSortedAscending, self.paramImportanceCutoff)
         else:
@@ -332,18 +331,18 @@ class aTDVP(TDVPBase):
     def calc_lite(self, S, update):
         return self.ElocVar0 - update.conj() @ S @ update
 
-    @classmethod
-    def calc_importance_on_params(cls, subS: np.ndarray, subUpdate: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def calc_importance_on_params(subS: np.ndarray, subUpdate: np.ndarray) -> np.ndarray:
         return np.diag(subS) * subUpdate.conj()*subUpdate
 
-    @classmethod
-    def calc_importance_off_params(self, invSubS: np.ndarray, subUpdate: np.ndarray, S: np.ndarray, F: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        if all(mask):
-            return None
+    @staticmethod
+    def calc_importance_off_params(invSubS: np.ndarray, subUpdate: np.ndarray, S: np.ndarray, F: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        if np.all(mask):
+            return np.array([])
         
         Vks = np.swapaxes(S[np.ix_(mask, ~mask)], 0, 1) # For each k, Vk is along axis 1, so that axis 0 can be treated as a batch axis
         Skk = np.diag(S[np.ix_(~mask, ~mask)])
-        #numeratorVec = Vks.conj() @ subUpdate + 1.j*self.F0[~mask]
+        #numeratorVec = Vks.conj() @ subUpdate + 1.j*F[~mask]
         numeratorVec = Vks.conj() @ subUpdate - F[~mask]
         Vdag_invS_V = np.einsum("ij,ij->i", Vks.conj()@invSubS, Vks)
         result = 1. / (Skk - Vdag_invS_V) * numeratorVec.conj() * numeratorVec
