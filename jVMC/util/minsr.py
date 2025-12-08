@@ -58,13 +58,17 @@ class MinSR:
 
         if holomorphic:
             T = gradients.tangent_kernel()
-            T_inv = jnp.linalg.pinv(T, rtol=self.pinvTol, hermitian=True)
+            #T_inv = jnp.linalg.pinv(T, rtol=self.pinvTol, hermitian=True)
+            T_inv = jnp.linalg.pinv(T, rcond=self.pinvTol, hermitian=True)
 
             eloc_all = mpi.gather(eloc._data).reshape((-1,))
             gradients_all = mpi.gather(gradients._data)
             update = - gradients_all.conj().T @ T_inv @ eloc_all
 
         else:
+            # NOTE gradients._data is different for each node and sharded across devices
+            # NOTE the following line causes flattening of device and batch axes, transfer to the host and gathering across MPI ranks
+            # NOTE see mpi_wrapper.gather for details
             gradients_all = mpi.gather(gradients._data)
             gradients_all = jnp.concatenate([jnp.real(gradients_all), jnp.imag(gradients_all)], axis=0)
 

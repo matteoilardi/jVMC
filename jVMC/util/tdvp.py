@@ -14,7 +14,7 @@ from functools import partial
 def realFun(x):
     return jnp.real(x)
 
-
+# FIXME actually returns i * Im, which is not what the article says
 def imagFun(x):
     return 0.5 * (x - jnp.conj(x))
                         
@@ -88,10 +88,10 @@ class TDVP:
         self.makeReal = realFun
         if makeReal == 'imag':
             self.makeReal = imagFun
-        self.trafo_helper = partial(transform_helper, rhsPrefactor=rhsPrefactor, makeReal=self.makeReal)
+        self.trafo_helper = partial(transform_helper, rhsPrefactor=rhsPrefactor, makeReal=self.makeReal) # NOTE used only to compute 
 
         # pmap'd member functions
-        self.makeReal_pmapd = global_defs.pmap_for_my_devices(jax.vmap(lambda x: self.makeReal(x)))
+        # self.makeReal_pmapd = global_defs.pmap_for_my_devices(jax.vmap(lambda x: self.makeReal(x))) # NOTE this function is unused
 
     def set_diagonal_shift(self, delta):
         self.diagonalShift = delta
@@ -99,7 +99,7 @@ class TDVP:
     def set_cross_validation(self, crossValidation=True):
         self.crossValidation = crossValidation
 
-    def _get_tdvp_error(self, update):
+    def _get_tdvp_error(self, update): # NOTE see arXiv:1912.08828
 
         return jnp.abs(1. + jnp.real(update.dot(self.S0.dot(update)) - 2. * jnp.real(update.dot(self.F0))) / self.ElocVar0)
 
@@ -131,7 +131,7 @@ class TDVP:
 
         return self.S
 
-    def get_tdvp_equation(self, Eloc, gradients):
+    def get_tdvp_equation(self, Eloc, gradients): # NOTE Eloc and gradients are of type SampledObs
 
         self.ElocMean = Eloc.mean()[0]
         self.ElocVar = Eloc.var()[0]
@@ -142,11 +142,12 @@ class TDVP:
         self.S0 = gradients.covar()
         S = self.makeReal(self.S0)
 
-        if self.diagonalShift > 1e-10:
+        if self.diagonalShift > 1e-10: # TODO why?
             S = S + jnp.diag(self.diagonalShift * jnp.diag(S))
 
         return S, F
 
+    # FIXME signature mismatch with the previous method
     def get_sr_equation(self, Eloc, gradients):
         return self.get_tdvp_equation(Eloc, gradients, rhsPrefactor=1.)
 
