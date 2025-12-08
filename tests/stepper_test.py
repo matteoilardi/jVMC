@@ -6,7 +6,7 @@ import jax
 import jax.random as random
 import jax.numpy as jnp
 import numpy as np
-
+import scipy
 
 class TestIntegrationHeun(unittest.TestCase):
 
@@ -32,7 +32,8 @@ class TestIntegrationHeun(unittest.TestCase):
         for k in range(100):
             y, dt = stepper.step(t,f,y,normFunction=norm,mat=mat)
             t+=dt
-            yExact = jax.scipy.linalg.expm(t * mat).dot(y0)
+            #yExact = jax.scipy.linalg.expm(t * mat).dot(y0)
+            yExact = scipy.linalg.expm(t * mat).dot(y0)
             diff = y - yExact
             diffs.append(norm(diff)/N)
 
