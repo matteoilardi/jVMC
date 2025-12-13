@@ -108,8 +108,21 @@ class OutputManager:
                     value = self.to_array(value)
 
                     if not key in f[self.currentGroup + "/" + groupname]:
+                        shape, dtype = value.shape, value.dtype
 
-                        f.create_dataset(self.currentGroup + "/" + groupname + "/" + key, (0,) + value.shape, maxshape=(None,) + value.shape, dtype='f8', chunks=True)
+                        # Further args to ensure compression of boolean data
+                        compression_toggle = {}
+                        if dtype == np.bool_:
+                            compression_toggle = {"compression": "gzip", "compression_opts": 4}          
+
+                        f.create_dataset(
+                            self.currentGroup + "/" + groupname + "/" + key, 
+                            (0,) + shape, 
+                            maxshape=(None,) + shape, 
+                            dtype=dtype,
+                            chunks=True,
+                            **compression_toggle,
+                        )
 
                     newLen = len(f[self.currentGroup + "/" + groupname + "/" + key]) + 1
                     f[self.currentGroup + "/" + groupname + "/" + key].resize((newLen,) + value.shape)
