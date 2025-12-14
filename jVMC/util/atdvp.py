@@ -11,9 +11,7 @@ from numba import njit
 from abc import ABC, abstractmethod
 import warnings
 from collections import namedtuple
-import functools as ft
 
-# TODO use normalized lite
 # TODO consider implementing a "soft" pinvCutoff
 # TODO consider adding support for adaptiveHeun
 
@@ -104,8 +102,9 @@ def _base_expand_masked(a: np.ndarray, mask: np.ndarray):
     out[mask] = a
     return out
 
-def _base_calc_lite(S, update, ElocVar):
-    return ElocVar - update.conj() @ S @ update
+def _base_calc_norm_lite(S, update, ElocVar):
+    """Compute the local-in-time error (lite), normalized by the variance of the local energy."""
+    return 1. - (1./ElocVar) * (update.conj() @ S @ update)
 
 def _base_switch_on_params(metadata, paramImportanceCutoff, liteCutoff) -> np.ndarray[np.bool_]:
     lite = metadata.lite
@@ -122,9 +121,9 @@ def _base_switch_on_params(metadata, paramImportanceCutoff, liteCutoff) -> np.nd
 
     if paramImportanceCutoff is not None:
         # Determine which currently active parameters should be switched off because of low importance
-        prevMaskImportant = _expand_masked(metadata.importanceOnParams, mask) > paramImportanceCutoff
+        prevMaskImportant = _expand_masked(metadata.importanceOnParams, mask) > paramImportanceCutoff * lite
         # Determine how many inactive parameters should be excluded from activation because of low importance
-        nIrrelevant = np.searchsorted(paramImportanceSortedAscending, paramImportanceCutoff)
+        nIrrelevant = np.searchsorted(paramImportanceSortedAscending, paramImportanceCutoff * lite)
     else:
         prevMaskImportant = mask
         nIrrelevant = 0
@@ -190,7 +189,7 @@ class aTDVP(TDVPBase):
     ):
         self.sampler = sampler
         if rhsPrefactor != 1.j:
-            warnings.warn(f"Got rhsPrefactor = {rhsPrefactor}, but aTVMC is meant for real time dynamics only", category=UserWarning)
+            warnings.warn(f"Got rhsPrefactor = {rhsPrefactor}, but atVMC is meant for real time dynamics only", category=UserWarning)
         self.rhsPrefactor = rhsPrefactor
 
         if makeReal == 'real':
@@ -253,10 +252,10 @@ class aTDVP(TDVPBase):
                 self.ElocMean0 = self.ElocMean
                 self.ElocVar0 = self.ElocVar
 
-                # Calculate metadata
-                lite = self.calc_lite(subS, subUpdate)
-                importanceOnParams = self.calc_importance_on_params(subS, subUpdate)
-                importanceOffParams = self.calc_importance_off_params(invSubS, subUpdate, S, F, mask)
+                # Calculate lite and parameter importance, normalized by the variance of local energy
+                lite = self.calc_norm_lite(subS, subUpdate)
+                importanceOnParams = self.calc_importance_on_params(subS, subUpdate) / self.ElocVar
+                importanceOffParams = self.calc_importance_off_params(invSubS, subUpdate, S, F, mask) / self.ElocVar
                 metadata = Metadata(lite, mask, importanceOnParams, importanceOffParams)
 
                 # Calculate mask for the next iteration
@@ -300,8 +299,8 @@ class aTDVP(TDVPBase):
     def calc_update(self, S: np.ndarray, F: np.ndarray):
         return self.backend['calc_update'](S, F)
 
-    def calc_lite(self, S, update):
-        return self.backend['calc_lite'](S, update, self.ElocVar0)
+    def calc_norm_lite(self, S, update):
+        return self.backend['calc_norm_lite'](S, update, self.ElocVar0)
 
     def calc_importance_on_params(self, subS: np.ndarray, subUpdate: np.ndarray) -> np.ndarray:
         return self.backend['calc_importance_on_params'](subS, subUpdate)
@@ -316,10 +315,10 @@ class aTDVP(TDVPBase):
 
 
 def NumpyBackend(diagonalizeOnDevice: bool):
-    global _expand_masked, _calc_lite, _switch_on_params
+    global _expand_masked, _calc_norm_lite, _switch_on_params
 
     _expand_masked = _base_expand_masked
-    _calc_lite = _base_calc_lite
+    _calc_norm_lite = _base_calc_norm_lite
     _switch_on_params = _base_switch_on_params
 
     def _calc_update(S: np.ndarray, F: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -377,7 +376,7 @@ def NumpyBackend(diagonalizeOnDevice: bool):
             subSubS, subSubF = subS[np.ix_(newSubMask, newSubMask)], subF[newSubMask]
             invSubSubS, subSubUpdate = _calc_update(subSubS, subSubF)
 
-            return _calc_lite(subSubS, subSubUpdate, ElocVar)
+            return _calc_norm_lite(subSubS, subSubUpdate, ElocVar)
 
         def search_n_switchoff(left, right):
             # Assumes that liteLeft is below cutoff, while liteRight is above cutoff
@@ -412,8 +411,8 @@ def NumpyBackend(diagonalizeOnDevice: bool):
 
     return {
         "expand_masked": _expand_masked,
-        "calc_lite": _calc_lite,
-        "calc_update": _calc_update,#ft.partial(_calc_update, diagonalizeOnDevice=diagonalizeOnDevice),
+        "calc_norm_lite": _calc_norm_lite,
+        "calc_update": _calc_update,
         "calc_importance_on_params": _calc_importance_on_params,
         "calc_importance_off_params": _calc_importance_off_params,
         "switch_off_params": _switch_off_params,
@@ -424,10 +423,10 @@ def NumpyBackend(diagonalizeOnDevice: bool):
 
 
 def NumbaBackend():
-    global _expand_masked, _calc_lite, _switch_on_params
+    global _expand_masked, _calc_norm_lite, _switch_on_params
 
     _expand_masked = njit(_base_expand_masked)
-    _calc_lite = njit(_base_calc_lite)
+    _calc_norm_lite = njit(_base_calc_norm_lite)
     _switch_on_params = njit(_base_switch_on_params)
 
     @njit
@@ -497,7 +496,7 @@ def NumbaBackend():
         subSubF = subF[newSubMask]
 
         invSubSubS, subSubUpdate = _calc_update(subSubS, subSubF)
-        return _calc_lite(subSubS, subSubUpdate, ElocVar)
+        return _calc_norm_lite(subSubS, subSubUpdate, ElocVar)
 
     @njit
     def _search_n_switch_off(left, right, paramIdxSorted: np.ndarray, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff) -> int:
@@ -554,7 +553,7 @@ def NumbaBackend():
 
     return {
         "expand_masked": _expand_masked,
-        "calc_lite": _calc_lite,
+        "calc_norm_lite": _calc_norm_lite,
         "calc_update": _calc_update,
         "calc_importance_on_params": _calc_importance_on_params,
         "calc_importance_off_params": _calc_importance_off_params,
