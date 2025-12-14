@@ -22,7 +22,8 @@ dependencies = ["numpy>=2",
                 "PyYAML", 
                 "matplotlib", 
                 "scipy",
-                "einops"]
+                "einops",
+                "numba"]
 requires-python = ">= 3.9"
 classifiers=[
     "Programming Language :: Python :: 3",
