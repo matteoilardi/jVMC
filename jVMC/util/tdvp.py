@@ -83,7 +83,7 @@ class TDVP:
 
         self.diagonalizeOnDevice = diagonalizeOnDevice
 
-        self.metaData = None
+        self.metadata = None
 
         self.makeReal = realFun
         if makeReal == 'imag':
@@ -105,19 +105,19 @@ class TDVP:
 
     def get_residuals(self):
 
-        return self.metaData["tdvp_error"], self.metaData["tdvp_residual"]
+        return self.metadata["tdvp_error"], self.metadata["tdvp_residual"]
 
     def get_snr(self):
 
-        return self.metaData["SNR"]
+        return self.metadata["SNR"]
 
     def get_spectrum(self):
 
-        return self.metaData["spectrum"]
+        return self.metadata["spectrum"]
 
     def get_metadata(self):
 
-        return self.metaData
+        return self.metadata
 
     def get_energy_variance(self):
 
@@ -296,7 +296,7 @@ class TDVP:
                 self.ElocMean0 = self.ElocMean
                 self.ElocVar0 = self.ElocVar
 
-                self.metaData = {
+                self.metadata = {
                     "tdvp_error": self._get_tdvp_error(update),
                     "tdvp_residual": solverResidual,
                     "pinv_cutoff": pinvCutoff,
@@ -318,9 +318,9 @@ class TDVP:
                     validation_residual = (jnp.linalg.norm(S2.dot(update_1) - F2) / jnp.linalg.norm(F2)) / solverResidual
 
                     self.crossValidationFactor_residual = validation_residual
-                    self.crossValidationFactor_tdvpErr = validation_tdvpErr / self.metaData["tdvp_error"]
-                    self.metaData["tdvp_residual_cross_validation_ratio"] = self.crossValidationFactor_residual
-                    self.metaData["tdvp_error_cross_validation_ratio"] = self.crossValidationFactor_tdvpErr
+                    self.crossValidationFactor_tdvpErr = validation_tdvpErr / self.metadata["tdvp_error"]
+                    self.metadata["tdvp_residual_cross_validation_ratio"] = self.crossValidationFactor_residual
+                    self.metadata["tdvp_error_cross_validation_ratio"] = self.crossValidationFactor_tdvpErr
 
                     self.S, _ = self.get_tdvp_equation(Eloc, sampleGradients)
 
