@@ -15,9 +15,10 @@ g = 4.0
 [eq_of_motion]
 mode = "tVMC"
 [eq_of_motion.parameters]
-diagonalShift = 1e-4
+diagonalShift = 0
 makeReal = "real"
 diagonalizeOnDevice = false
+pinvCutoff = 1e-7
 
 [integrator]
 mode = "Euler"

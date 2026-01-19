@@ -1,4 +1,5 @@
 import jax
+import jax.numpy as jnp
 import jVMC
 
 from enum import Enum
@@ -57,21 +58,23 @@ class PhysicalSystemConfig(BaseModel):
 # =========== EQUATION OF MOTION =============
 
 class SRParams(BaseModel):
-    diagonalShift: float = Field(gt=0)
+    diagonalShift: float = Field(ge=0)
     makeReal: str
     diagonalizeOnDevice: bool
 
 class tVMCParams(BaseModel):
-    diagonalShift: float = Field(gt=0)
+    diagonalShift: float = Field(ge=0)
     makeReal: str
     diagonalizeOnDevice: bool
+    pinvCutoff: float = Field(ge=0)
+
 
 class atVMCParams(BaseModel):
-    diagonalShift: float = Field(gt=0)
-    pinvCutoff: float = Field(gt=0)
-    liteCutoff: float = Field(gt=0)
+    diagonalShift: float = Field(ge=0)
+    pinvCutoff: float = Field(ge=0)
+    liteCutoff: float = Field(ge=0)
     paramImportanceCutoff: Optional[float] = None
-    minSwitchOff: int = Field(gt=0)
+    minSwitchOff: int = Field(ge=0)
     backend: str
 
 class minSRParams(BaseModel):
@@ -157,7 +160,7 @@ class SamplerSettings(BaseModel):
     numSamples: int = Field(gt=0)
     numChains: int = Field(gt=0)
     sweepSteps: int = Field(gt=0)
-    thermalizationSweeps: int = Field(gt=0)
+    thermalizationSweeps: int = Field(ge=0)
 
     @model_validator(mode="after")
     def check_samples_chains(self) -> "SamplerSettings":
@@ -185,7 +188,7 @@ class SamplerConfig(BaseModel):
 # ======= OBSERVABLE MEASUREMENTS ==========
 
 class MeasurementConfig(BaseModel):
-    measurementSamples: int = Field(gt=0)
+    measurementSamples: int = Field(ge=0)
 
 # =============== CONFIG ===================
 
