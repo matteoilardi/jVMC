@@ -1,0 +1,39 @@
+[IO]
+checkpoint = ""
+output = "ciao.h5"
+
+[ansatz]
+net = "CpxRBM"
+[ansatz.parameters]
+numHidden = 30
+bias = true
+
+[physical_system]
+L = 10
+g = 4.0
+
+[eq_of_motion]
+mode = "SR"
+[eq_of_motion.parameters]
+diagonalShift = 1e-2
+makeReal = "real"
+diagonalizeOnDevice = false
+
+[integrator]
+mode = "Euler"
+[integrator.parameters]
+timeStep = 1e-2
+nSteps = 100
+
+[sampler]
+mode = "MC"
+[sampler.settings]
+numSamples = 12000
+numChains = 100
+sweepSteps = 10
+thermalizationSweeps = 25
+[sampler.proposer]
+updateProposer = "spin_flip_Z2"
+
+[measurements]
+measurementSamples = 10

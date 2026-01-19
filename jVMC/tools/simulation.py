@@ -256,7 +256,7 @@ def main():
     for l in range(L):
         magnetization.add(jVMC.operator.scal_opstr(1./L, (jVMC.operator.Sx(l),)))
     
-    observables = {"magnetization": magnetization}
+    observables = {"magnetization": magnetization, "energy": hamiltonian}
 
     # Sampler
     sampler = config.sampler.build(psi, L, jax.random.key(8))
@@ -276,14 +276,17 @@ def main():
         psi.set_parameters(updatedParams)
     
         measurements = jVMC.util.measure(observables, psi=psi, sampler=sampler, numSamples=MEASUREMENT_SAMPLES)        
-        outputManager.write_observables(step, magnetization=measurements["magnetization"])
+        outputManager.write_observables(step, **measurements)
         outputManager.write_metadata(step, **tdvpEquation.metadata)
 
         energy_per_spin = jax.numpy.real(tdvpEquation.ElocMean0) / L
         var_energy_per_spin = tdvpEquation.ElocVar0 / L
 
         print(f"Step: {step}\tEnergy: {energy_per_spin}")
-        outputManager.write_observables(step, energy={"mean": energy_per_spin, "variance": var_energy_per_spin})
+        outputManager.write_observables(step, energy={
+            "mean(time ev samples)": energy_per_spin, 
+            "variance(time ev samples)": var_energy_per_spin
+        })
 
         if step == N_STEPS - 1:
             outputManager.write_network_checkpoint(step, psi.get_parameters())
