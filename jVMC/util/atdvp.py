@@ -291,13 +291,13 @@ class aTDVP(TDVPBase):
         return S, F
 
     def switch_off_params(self, metadata, subS: np.ndarray, subF:np.ndarray) -> np.ndarray[np.bool_]:
-        return self.backend['switch_off_params'](metadata, subS, subF, self.ElocVar0, self.liteCutoff, self.minSwitchOff)
+        return self.backend['switch_off_params'](metadata, subS, subF, self.ElocVar0, self.liteCutoff, self.minSwitchOff, self.pinvCutoff)
 
     def switch_on_params(self, metadata):
         return self.backend['switch_on_params'](metadata, self.paramImportanceCutoff, self.liteCutoff)
 
     def calc_update(self, S: np.ndarray, F: np.ndarray):
-        return self.backend['calc_update'](S, F)
+        return self.backend['calc_update'](S, F, self.pinvCutoff)
 
     def calc_norm_lite(self, S, update):
         return self.backend['calc_norm_lite'](S, update, self.ElocVar0)
@@ -321,16 +321,23 @@ def NumpyBackend(diagonalizeOnDevice: bool):
     _calc_norm_lite = _base_calc_norm_lite
     _switch_on_params = _base_switch_on_params
 
-    def _calc_update(S: np.ndarray, F: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _calc_update(S: np.ndarray, F: np.ndarray, pinvCutoff: float) -> tuple[np.ndarray, np.ndarray]:
         if diagonalizeOnDevice:
             S = jax.device_put(S, jVMC.global_defs.myDevice)
-            w, V = jnp.linalg.eigh(S)
-            w, V = np.array(w), np.array(V)
+            ev, V = jnp.linalg.eigh(S)
+            ev, V = np.array(ev), np.array(V)
         else:
-            w, V = np.linalg.eigh(S)
+            ev, V = np.linalg.eigh(S)
 
-        invW = np.where(w > 1e-14, 1./w, 0.)
-        invS = V @ np.diag(invW) @ V.conj().T
+        normEv = np.abs(ev/ev[-1])
+        invEv = np.where(normEv > pinvCutoff, 1./ev, 0.)
+        
+        # Apply soft cutoff based on the SNR
+        # regularizer = 1. / (1. + (pinvCutoff / normEv))**6)
+        # invEv *= regularizer
+
+        # TODO avoid allocating the entire matrix
+        invS = V @ np.diag(invEv) @ V.conj().T
         update = invS @ F
         return invS, update
 
@@ -349,7 +356,7 @@ def NumpyBackend(diagonalizeOnDevice: bool):
         result = 1. / (Skk - Vdag_invS_V) * numeratorVec.conj() * numeratorVec
         return np.real(result)
 
-    def _switch_off_params(metadata, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff, minSwitchOff) -> np.ndarray[np.bool_]:
+    def _switch_off_params(metadata, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff, minSwitchOff, pinvCutoff) -> np.ndarray[np.bool_]:
         lite = metadata.lite
         mask = metadata.mask
         importanceOnParams = metadata.importanceOnParams
@@ -368,13 +375,13 @@ def NumpyBackend(diagonalizeOnDevice: bool):
             newSubMask[paramIdxSorted[:1]] = False
             return _expand_masked(newSubMask, mask)
 
-        def lite_n_switchoff(nSwitchOff: int):
+        def lite_n_switchoff(nSwitchOff: int, pinvCutoff: float):
             idxSwitchOff = paramIdxSorted[:nSwitchOff]
             newSubMask = np.ones(nActive, dtype=np.bool_)
             newSubMask[idxSwitchOff] = False
 
             subSubS, subSubF = subS[np.ix_(newSubMask, newSubMask)], subF[newSubMask]
-            invSubSubS, subSubUpdate = _calc_update(subSubS, subSubF)
+            invSubSubS, subSubUpdate = _calc_update(subSubS, subSubF, pinvCutoff)
 
             return _calc_norm_lite(subSubS, subSubUpdate, ElocVar)
 
@@ -382,21 +389,21 @@ def NumpyBackend(diagonalizeOnDevice: bool):
             # Assumes that liteLeft is below cutoff, while liteRight is above cutoff
             while right > left + 1:
                 mid = left + (right - left) // 2
-                liteMid = lite_n_switchoff(mid)
+                liteMid = lite_n_switchoff(mid, pinvCutoff)
                 if liteMid < liteCutoff:
                     left = mid
                 else:
                     right = mid
             return left
 
-        if lite_n_switchoff(nSwitchOffTry) > liteCutoff:
+        if lite_n_switchoff(nSwitchOffTry, pinvCutoff) > liteCutoff:
             # The threshold for nSwitchOff must be in the interval [0, nSwitchOffTry]
             nSwitchOff = search_n_switchoff(0, nSwitchOffTry)    
         else: # nSwitchOffTry is small enough to keep the lite below the cutoff
             if nSwitchOffTry >= nActive - 1:
                 nSwitchOff = nActive - 1 # Keep at least one active parameter
             else:
-                if lite_n_switchoff(nActive - 1) < liteCutoff:
+                if lite_n_switchoff(nActive - 1, pinvCutoff) < liteCutoff:
                     # Below the lite cutoff even with one active parameter
                     nSwitchOff = nActive - 1
                 else:
@@ -430,11 +437,12 @@ def NumbaBackend():
     _switch_on_params = njit(_base_switch_on_params)
 
     @njit
-    def _calc_update(S: np.ndarray, F: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        w, V = np.linalg.eigh(S)
+    def _calc_update(S: np.ndarray, F: np.ndarray, pinvCutoff: float) -> tuple[np.ndarray, np.ndarray]:
+        ev, V = np.linalg.eigh(S)
 
-        invW = np.where(w > 1e-14, 1./w, 0.)
-        invS = V @ np.diag(invW) @ V.conj().T
+        normEv = np.abs(ev / ev[-1])
+        invEv = np.where(normEv > pinvCutoff, 1./ev, 0.)
+        invS = V @ np.diag(invEv) @ V.conj().T
         update = invS @ F
         return invS, update
 
@@ -485,7 +493,7 @@ def NumbaBackend():
         return np.real(result)
 
     @njit
-    def _lite_n_switch_off(nSwitchOff, paramIdxSorted: np.ndarray, subS: np.ndarray, subF: np.ndarray, ElocVar) -> float:
+    def _lite_n_switch_off(nSwitchOff, paramIdxSorted: np.ndarray, subS: np.ndarray, subF: np.ndarray, ElocVar, pinvCutoff) -> float:
         idxSwitchOff = paramIdxSorted[:nSwitchOff]
         nActive = paramIdxSorted.shape[0]
         newSubMask = np.ones(nActive, dtype=np.bool_)
@@ -495,15 +503,15 @@ def NumbaBackend():
         subSubS = cutSubS[:, newSubMask]
         subSubF = subF[newSubMask]
 
-        invSubSubS, subSubUpdate = _calc_update(subSubS, subSubF)
+        invSubSubS, subSubUpdate = _calc_update(subSubS, subSubF, pinvCutoff)
         return _calc_norm_lite(subSubS, subSubUpdate, ElocVar)
 
     @njit
-    def _search_n_switch_off(left, right, paramIdxSorted: np.ndarray, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff) -> int:
+    def _search_n_switch_off(left, right, paramIdxSorted: np.ndarray, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff, pinvCutoff) -> int:
         # Assumes that liteLeft is below cutoff, while liteRight is above cutoff
         while right > left + 1:
             mid = left + (right - left) // 2
-            liteMid = _lite_n_switch_off(mid, paramIdxSorted, subS, subF, ElocVar)
+            liteMid = _lite_n_switch_off(mid, paramIdxSorted, subS, subF, ElocVar, pinvCutoff)
             if liteMid < liteCutoff:
                 left = mid
             else:
@@ -511,7 +519,7 @@ def NumbaBackend():
         return left
 
     @njit
-    def _switch_off_params(metadata, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff, minSwitchOff) -> np.ndarray[bool]:
+    def _switch_off_params(metadata, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff, minSwitchOff, pinvCutoff) -> np.ndarray[bool]:
         lite = metadata.lite
         mask = metadata.mask
         importanceOnParams = metadata.importanceOnParams
@@ -531,19 +539,19 @@ def NumbaBackend():
             return _expand_masked(newSubMask, mask)
 
         # Initialize nSwitchOff
-        if _lite_n_switch_off(nSwitchOffTry, paramIdxSorted, subS, subF, ElocVar) > liteCutoff:
+        if _lite_n_switch_off(nSwitchOffTry, paramIdxSorted, subS, subF, ElocVar, pinvCutoff) > liteCutoff:
             # The threshold for nSwitchOff must be in the interval [0, nSwitchOffTry]
-            nSwitchOff = _search_n_switch_off(0, nSwitchOffTry, paramIdxSorted, subS, subF, ElocVar, liteCutoff)
+            nSwitchOff = _search_n_switch_off(0, nSwitchOffTry, paramIdxSorted, subS, subF, ElocVar, liteCutoff, pinvCutoff)
         else: # nSwitchOffTry is small enough to keep the lite below the cutoff
             if nSwitchOffTry >= nActive - 1:
                 nSwitchOff = nActive - 1 # Keep at least one active parameter
             else:
-                if _lite_n_switch_off(nActive - 1, paramIdxSorted, subS, subF, ElocVar) < liteCutoff:
+                if _lite_n_switch_off(nActive - 1, paramIdxSorted, subS, subF, ElocVar, pinvCutoff) < liteCutoff:
                     # Below the lite cutoff even with one active parameter
                     nSwitchOff = nActive - 1
                 else:
                     # The threshold for nSwitchOff must be in the interval [nSwitchOffTry, nActive-1]
-                    nSwitchOff = _search_n_switch_off(nSwitchOffTry, nActive - 1, paramIdxSorted, subS, subF, ElocVar, liteCutoff)
+                    nSwitchOff = _search_n_switch_off(nSwitchOffTry, nActive - 1, paramIdxSorted, subS, subF, ElocVar, liteCutoff, pinvCutoff)
 
         # Build and return mask for the chosen value of nSwitchOff
         idxSwitchOff = paramIdxSorted[:nSwitchOff]
