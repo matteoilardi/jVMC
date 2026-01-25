@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field, model_validator, ValidationError
 
 import sys
 
-
 # ================== IO ====================
 
 class IOConfig(BaseModel):
@@ -27,14 +26,30 @@ class CpxRBM_TIParams(BaseModel):
     numHidden: int
     bias: bool
 
+class CpxVisionTransformerParams(BaseModel):
+    patch_len: int
+    embed_dim: int
+    n_layers: int
+    n_heads: int
+    n_layers_ff: int
+
+    @model_validator(mode="after")
+    def check_n_heads(self) -> "CpxVisionTransformerParams":
+        if self.embed_dim % self.n_heads != 0:
+            raise ValueError(f"Embedding dimension must be divisible by number of attention heads")
+        return self
+
 class AnsatzBase(BaseModel):
     def build(self):
-        if self.net == "CpxRBM":
-            return jVMC.nets.rbm.CpxRBM(**self.parameters.model_dump())
-        elif self.net == "CpxRBM_TI":
-            return jVMC.nets.rbm.CpxRBM_TI(**self.parameters.model_dump())
-        else:
+        NETS = {
+            "CpxRBM": jVMC.nets.rbm.CpxRBM,
+            "CpxRBM_TI": jVMC.nets.rbm.CpxRBM_TI,
+            "CpxVisionTransformer": jVMC.nets.transformer.CpxVisionTransformer,
+        }
+
+        if self.net not in NETS:
             raise ValueError(f"Net type: {self.net} is not supported")
+        return NETS[self.net](**self.parameters.model_dump())
 
 class CpxRBMConfig(AnsatzBase):
     net: Literal["CpxRBM"]
@@ -44,8 +59,12 @@ class CpxRBM_TIConfig(AnsatzBase):
     net: Literal["CpxRBM_TI"]
     parameters: CpxRBM_TIParams
 
+class CpxVisionTransformerConfig(AnsatzBase):
+    net: Literal["CpxVisionTransformer"]
+    parameters: CpxVisionTransformerParams
+
 AnsatzConfig = Annotated[
-    Union[CpxRBMConfig, CpxRBM_TIConfig], 
+    Union[CpxRBMConfig, CpxRBM_TIConfig, CpxVisionTransformerConfig],
     Field(discriminator="net")
 ]
 
@@ -64,10 +83,9 @@ class SRParams(BaseModel):
 
 class tVMCParams(BaseModel):
     diagonalShift: float = Field(ge=0)
+    pinvCutoff: float = Field(ge=0)
     makeReal: str
     diagonalizeOnDevice: bool
-    pinvCutoff: float = Field(ge=0)
-
 
 class atVMCParams(BaseModel):
     diagonalShift: float = Field(ge=0)
@@ -78,7 +96,9 @@ class atVMCParams(BaseModel):
     backend: str
 
 class minSRParams(BaseModel):
-    ...
+    diagonalShift: float = Field(ge=0)
+    pinvTol: float = Field(ge=0)
+    diagonalizeOnDevice: bool
 
 class BaseEqOfMotion(BaseModel):
     def build(self, sampler):
@@ -89,10 +109,10 @@ class BaseEqOfMotion(BaseModel):
         elif self.mode == "atVMC":
             return jVMC.util.aTDVP(sampler, rhsPrefactor=1.j, makeReal="real", **self.parameters.model_dump(), mpiRoot=0)
         elif self.mode == "minSR":
-            return ...
+            return jVMC.util.MinSR(sampler, **self.parameters.model_dump())
         else:
             raise ValueError(f"Algorithm {self.mode} is not supported")
-        
+
 
 class SRConfig(BaseEqOfMotion):
     mode: Literal["SR"]
@@ -174,7 +194,7 @@ class SamplerConfig(BaseModel):
     settings: SamplerSettings
     proposer: UpdateProposerConfig
 
-    def build(self, psi, L, random_key):        
+    def build(self, psi, L, random_key):
         if self.mode == SamplerType.MC:
             return jVMC.sampler.MCSampler(
                 psi, (L,), random_key,
@@ -201,6 +221,12 @@ class Config(BaseModel):
     sampler: SamplerConfig
     measurements: MeasurementConfig
 
+    @model_validator(mode="after")
+    def check_patch_dim_if_transformer(self) -> "Config":
+        if self.ansatz.net == "CpxVisionTransformer":
+            if self.physical_system.L  % self.ansatz.parameters.patch_len != 0:
+                raise ValueError(f"Number of spins must be divisible by length of transformer patch")
+        return self
 
 def load_config(path: str):
     with open(path, 'rb') as f:
@@ -213,7 +239,7 @@ def load_config(path: str):
             path = ".".join(str(item) for item in error['loc'])
             print(f"  [{path}] -> {error['msg']}")
         sys.exit(1)
-        
+
     return config
 
 
@@ -254,11 +280,11 @@ def main():
     for l in range(L):
         hamiltonian.add(jVMC.operator.scal_opstr(-1., (jVMC.operator.Sz(l), jVMC.operator.Sz((l + 1) % L))))
         hamiltonian.add(jVMC.operator.scal_opstr(g, (jVMC.operator.Sx(l), )))
-    
+
     magnetization = jVMC.operator.BranchFreeOperator()
     for l in range(L):
         magnetization.add(jVMC.operator.scal_opstr(1./L, (jVMC.operator.Sx(l),)))
-    
+
     observables = {"magnetization": magnetization, "energy": hamiltonian}
 
     # Sampler
@@ -266,7 +292,7 @@ def main():
 
     # Equation of motion
     tdvpEquation = config.eq_of_motion.build(sampler)
-    
+
     # Integrator
     stepper = config.integrator.build()
     N_STEPS = config.integrator.parameters.nSteps
@@ -274,22 +300,21 @@ def main():
     # Measurement samples
     MEASUREMENT_SAMPLES = config.measurements.measurementSamples
 
+    # Simulation loop
     for step in range(N_STEPS):
         updatedParams, _ = stepper.step(0, tdvpEquation, psi.get_parameters(), hamiltonian=hamiltonian, psi=psi, outp=outputManager)
         psi.set_parameters(updatedParams)
-    
-        measurements = jVMC.util.measure(observables, psi=psi, sampler=sampler, numSamples=MEASUREMENT_SAMPLES)        
-        outputManager.write_observables(step, **measurements)
-        outputManager.write_metadata(step, **tdvpEquation.metadata)
 
         energy_per_spin = jax.numpy.real(tdvpEquation.ElocMean0) / L
         var_energy_per_spin = tdvpEquation.ElocVar0 / L
-
         print(f"Step: {step}\tEnergy: {energy_per_spin}")
-        outputManager.write_observables(step, energy={
-            "mean(time ev samples)": energy_per_spin, 
-            "variance(time ev samples)": var_energy_per_spin
-        })
+
+        measurements = jVMC.util.measure(observables, psi=psi, sampler=sampler, numSamples=MEASUREMENT_SAMPLES)
+        measurements["energy"]["mean(time ev samples)"] = energy_per_spin
+        measurements["energy"]["variance(time ev samples)"] = var_energy_per_spin
+
+        outputManager.write_observables(step, **measurements)
+        outputManager.write_metadata(step, **tdvpEquation.metadata)
 
         if step == N_STEPS - 1:
             outputManager.write_network_checkpoint(step, psi.get_parameters())

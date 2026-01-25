@@ -32,7 +32,7 @@ class MinSR:
 
         self.diagonalizeOnDevice = diagonalizeOnDevice
 
-        self.metaData = None
+        self.metadata = None
 
     def set_pinv_tol(self, tol):
 
@@ -40,7 +40,7 @@ class MinSR:
 
     def get_metadata(self):
 
-        return self.metaData
+        return self.metadata
 
     def get_energy_variance(self):
 
@@ -164,6 +164,6 @@ class MinSR:
                 self.ElocMean0 = Eloc.mean()[0]
                 self.ElocVar0 = Eloc.var()[0]
 
-                self.metaData = {}
+                self.metadata = {}
 
         return update
