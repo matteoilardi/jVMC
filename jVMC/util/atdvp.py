@@ -290,7 +290,7 @@ class aTDVP(TDVPBase):
         return S, F
 
     def switch_off_params(self, metadata, subS: np.ndarray, subF:np.ndarray) -> np.ndarray[np.bool_]:
-        return self.backend['switch_off_params'](metadata, subS, subF, self.ElocVar0, self.liteCutoff, self.minSwitchOff, self.pinvCutoff)
+        return self.backend['switch_off_params'](metadata, subS, subF, self.ElocVar0, self.liteCutoff, self.paramImportanceCutoff, self.minSwitchOff, self.pinvCutoff)
 
     def switch_on_params(self, metadata):
         return self.backend['switch_on_params'](metadata, self.paramImportanceCutoff, self.liteCutoff)
@@ -354,7 +354,7 @@ def NumpyBackend(diagonalizeOnDevice: bool):
         result = 1. / (Skk - VT_invS_V) * (numeratorVec * numeratorVec)
         return result
 
-    def _switch_off_params(metadata, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff, minSwitchOff, pinvCutoff) -> np.ndarray[np.bool_]:
+    def _switch_off_params(metadata, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff, paramImportanceCutoff, minSwitchOff, pinvCutoff) -> np.ndarray[np.bool_]:
         lite = metadata.lite
         mask = metadata.mask
         importanceOnParams = metadata.importanceOnParams
@@ -408,7 +408,11 @@ def NumpyBackend(diagonalizeOnDevice: bool):
                     # The threshold for nSwitchOff must be in the interval [nSwitchOffTry, nActive-1]
                     nSwitchOff = search_n_switchoff(nSwitchOffTry, nActive - 1)
 
-        # TODO Switch off also non relevant parameters
+        if paramImportanceCutoff is not None:
+            # Switch off all irrelevant parameters
+            nIrrelevant = np.searchsorted(paramImportanceSorted, paramImportanceCutoff * lite)
+            nIrrelevant = min(nIrrelevant, nActive - 1)
+            nSwitchOff = max(nSwitchOff, nIrrelevant)
 
         # Build and return mask for the chosen value of nSwitchOff
         idxSwitchOff = paramIdxSorted[:nSwitchOff]
@@ -519,7 +523,7 @@ def NumbaBackend():
         return left
 
     @njit
-    def _switch_off_params(metadata, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff, minSwitchOff, pinvCutoff) -> np.ndarray[bool]:
+    def _switch_off_params(metadata, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff, paramImportanceCutoff, minSwitchOff, pinvCutoff) -> np.ndarray[bool]:
         lite = metadata.lite
         mask = metadata.mask
         importanceOnParams = metadata.importanceOnParams
@@ -552,6 +556,12 @@ def NumbaBackend():
                 else:
                     # The threshold for nSwitchOff must be in the interval [nSwitchOffTry, nActive-1]
                     nSwitchOff = _search_n_switch_off(nSwitchOffTry, nActive - 1, paramIdxSorted, subS, subF, ElocVar, liteCutoff, pinvCutoff)
+
+        if paramImportanceCutoff is not None:
+            # Switch off all irrelevant parameters
+            nIrrelevant = np.searchsorted(paramImportanceSorted, paramImportanceCutoff * lite)
+            nIrrelevant = min(nIrrelevant, nActive - 1)
+            nSwitchOff = max(nSwitchOff, nIrrelevant)
 
         # Build and return mask for the chosen value of nSwitchOff
         idxSwitchOff = paramIdxSorted[:nSwitchOff]
