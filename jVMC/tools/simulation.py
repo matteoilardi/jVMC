@@ -107,7 +107,7 @@ class BaseEqOfMotion(BaseModel):
         elif self.mode == "tVMC":
             return jVMC.util.TDVP(sampler, rhsPrefactor=1.j, **self.parameters.model_dump())
         elif self.mode == "atVMC":
-            return jVMC.util.aTDVP(sampler, rhsPrefactor=1.j, makeReal="real", **self.parameters.model_dump(), mpiRoot=0)
+            return jVMC.util.aTDVP(sampler, rhsPrefactor=1.j, **self.parameters.model_dump(), mpiRoot=0)
         elif self.mode == "minSR":
             return jVMC.util.MinSR(sampler, **self.parameters.model_dump())
         else:

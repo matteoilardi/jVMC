@@ -104,7 +104,7 @@ def _base_expand_masked(a: np.ndarray, mask: np.ndarray):
 
 def _base_calc_norm_lite(S, update, ElocVar):
     """Compute the local-in-time error (lite), normalized by the variance of the local energy."""
-    return 1. - (1./ElocVar) * (update.conj() @ S @ update)
+    return 1. - (1./ElocVar) * (update @ S @ update)
 
 def _base_switch_on_params(metadata, paramImportanceCutoff, liteCutoff) -> np.ndarray[np.bool_]:
     lite = metadata.lite
@@ -184,7 +184,7 @@ class aTDVP(TDVPBase):
             Can be `'numpy'` (plain numpy functions) or `'numba'` (numba-jitted functions).
     """
     def __init__(
-        self, sampler, rhsPrefactor=1.j, makeReal='real', diagonalShift=1e-4, pinvCutoff=1e-8, diagonalizeOnDevice=False,
+        self, sampler, rhsPrefactor=1.j, diagonalShift=1e-4, pinvCutoff=1e-8, diagonalizeOnDevice=False,
         liteCutoff = 0.01, paramImportanceCutoff = None, minSwitchOff = 3, mpiRoot = 0, backend = 'numpy',
     ):
         self.sampler = sampler
@@ -192,12 +192,7 @@ class aTDVP(TDVPBase):
             warnings.warn(f"Got rhsPrefactor = {rhsPrefactor}, but atVMC is meant for real time dynamics only", category=UserWarning)
         self.rhsPrefactor = rhsPrefactor
 
-        if makeReal == 'real':
-            self.makeReal = np.real
-        elif makeReal == 'imag':
-            self.makeReal = np.imag
-        else:
-            raise ValueError("Argument makeReal should be either `real` or `imag`")
+        self.makeReal = np.real
 
         self.pinvCutoff = pinvCutoff
         self.diagonalShift = diagonalShift
@@ -286,6 +281,10 @@ class aTDVP(TDVPBase):
         F = self.makeReal((-self.rhsPrefactor) * F)
         S = self.makeReal(S)
 
+        # Ensure S is symmetric
+        S = 0.5 * (S + S.T)
+
+        # Apply diagonal shift to S
         S = S + np.diag(self.diagonalShift * np.diag(S)) # NOTE multiplicative on each diagonal element
 
         return S, F
@@ -329,20 +328,19 @@ def NumpyBackend(diagonalizeOnDevice: bool):
         else:
             ev, V = np.linalg.eigh(S)
 
-        normEv = np.abs(ev/ev[-1])
-        invEv = np.where(normEv > pinvCutoff, 1./ev, 0.)
+        invEv = np.where(ev > pinvCutoff, 1./ev, 0.)
         
-        # Apply soft cutoff based on the SNR
-        # regularizer = 1. / (1. + (pinvCutoff / normEv))**6)
+        # TODO Apply soft cutoff
+        # regularizer = 1. / (1. + (pinvCutoff / ev))**6)
         # invEv *= regularizer
 
-        # TODO avoid allocating the entire matrix
-        invS = V @ np.diag(invEv) @ V.conj().T
+        # Allocating the entire matrix here because calculating the importance of inactive parameters requires it
+        invS = V @ np.diag(invEv) @ V.T
         update = invS @ F
         return invS, update
 
     def _calc_importance_on_params(subS: np.ndarray, subUpdate: np.ndarray) -> np.ndarray:
-        return np.diag(subS) * subUpdate.conj()*subUpdate
+        return np.diag(subS) * (subUpdate * subUpdate)
 
     def _calc_importance_off_params(invSubS: np.ndarray, subUpdate: np.ndarray, S: np.ndarray, F: np.ndarray, mask: np.ndarray) -> np.ndarray:
         if np.all(mask):
@@ -350,11 +348,11 @@ def NumpyBackend(diagonalizeOnDevice: bool):
 
         Vks = np.swapaxes(S[np.ix_(mask, ~mask)], 0, 1) # For each k, Vk is along axis 1, so that axis 0 can be treated as a batch axis
         Skk = np.diag(S[np.ix_(~mask, ~mask)])
-        #numeratorVec = Vks.conj() @ subUpdate + 1.j*F[~mask]
-        numeratorVec = Vks.conj() @ subUpdate - F[~mask]
-        Vdag_invS_V = np.einsum("ij,ij->i", Vks.conj()@invSubS, Vks)
-        result = 1. / (Skk - Vdag_invS_V) * numeratorVec.conj() * numeratorVec
-        return np.real(result)
+        #numeratorVec = Vks @ subUpdate + 1.j*F[~mask]
+        numeratorVec = Vks @ subUpdate - F[~mask]
+        VT_invS_V = np.einsum("ki,ki->k", Vks @ invSubS, Vks)
+        result = 1. / (Skk - VT_invS_V) * (numeratorVec * numeratorVec)
+        return result
 
     def _switch_off_params(metadata, subS: np.ndarray, subF: np.ndarray, ElocVar, liteCutoff, minSwitchOff, pinvCutoff) -> np.ndarray[np.bool_]:
         lite = metadata.lite
@@ -381,7 +379,7 @@ def NumpyBackend(diagonalizeOnDevice: bool):
             newSubMask[idxSwitchOff] = False
 
             subSubS, subSubF = subS[np.ix_(newSubMask, newSubMask)], subF[newSubMask]
-            invSubSubS, subSubUpdate = _calc_update(subSubS, subSubF, pinvCutoff)
+            _, subSubUpdate = _calc_update(subSubS, subSubF, pinvCutoff)
 
             return _calc_norm_lite(subSubS, subSubUpdate, ElocVar)
 
@@ -409,6 +407,8 @@ def NumpyBackend(diagonalizeOnDevice: bool):
                 else:
                     # The threshold for nSwitchOff must be in the interval [nSwitchOffTry, nActive-1]
                     nSwitchOff = search_n_switchoff(nSwitchOffTry, nActive - 1)
+
+        # TODO Switch off also non relevant parameters
 
         # Build and return mask for the chosen value of nSwitchOff
         idxSwitchOff = paramIdxSorted[:nSwitchOff]
