@@ -177,6 +177,7 @@ class UpdateProposerConfig(BaseModel):
             raise ValueError(f"Update proposer: {self.updateProposer} not supported")
 
 class SamplerSettings(BaseModel):
+    key: int = Field(gt=0)
     numSamples: int = Field(gt=0)
     numChains: int = Field(gt=0)
     sweepSteps: int = Field(gt=0)
@@ -194,11 +195,10 @@ class SamplerConfig(BaseModel):
     settings: SamplerSettings
     proposer: UpdateProposerConfig
 
-    def build(self, psi, L, random_key):
+    def build(self, psi, L):
         if self.mode == SamplerType.MC:
             return jVMC.sampler.MCSampler(
-                psi, (L,), random_key,
-                **self.settings.model_dump(),
+                psi, (L,), **self.settings.model_dump(),
                 updateProposer=self.proposer.build(),
             )
         else:
@@ -288,7 +288,7 @@ def main():
     observables = {"magnetization": magnetization, "energy": hamiltonian}
 
     # Sampler
-    sampler = config.sampler.build(psi, L, jax.random.key(8))
+    sampler = config.sampler.build(psi, L)
 
     # Equation of motion
     tdvpEquation = config.eq_of_motion.build(sampler)
