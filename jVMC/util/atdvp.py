@@ -110,8 +110,18 @@ def _base_switch_on_params(metadata, paramImportanceCutoff, liteCutoff) -> np.nd
     lite = metadata.lite
     mask = metadata.mask
     importanceOffParams = metadata.importanceOffParams
+    importanceOnParams = metadata.importanceOnParams
 
+    # Calculate normalized cutoff for parameter importance
+    if paramImportanceCutoff is None:
+        normParamImportanceCutoff = None
+    else:
+        normParamImportanceCutoff = paramImportanceCutoff * lite
+
+    # Return if all parameters are currently active
     if importanceOffParams.size == 0:
+        if paramImportanceCutoff is not None:
+            return switch_off_one_if_irrelevant(mask, importanceOnParams, normParamImportanceCutoff)
         return mask
 
     nNonActive = importanceOffParams.shape[0]
@@ -120,12 +130,12 @@ def _base_switch_on_params(metadata, paramImportanceCutoff, liteCutoff) -> np.nd
     paramImportanceSortedAscending = importanceOffParams[paramIdxSortedAscending]
 
     if paramImportanceCutoff is not None:
-        # Determine which currently active parameters should be switched off because of low importance
-        prevMaskImportant = _expand_masked(metadata.importanceOnParams, mask) > paramImportanceCutoff * lite
         # Determine how many inactive parameters should be excluded from activation because of low importance
-        nIrrelevant = np.searchsorted(paramImportanceSortedAscending, paramImportanceCutoff * lite)
+        nIrrelevant = np.searchsorted(paramImportanceSortedAscending, normParamImportanceCutoff)
+
+        if nIrrelevant == nNonActive: # All inactive parameters are irrelevant
+            return switch_off_one_if_irrelevant(mask, importanceOnParams, normParamImportanceCutoff)
     else:
-        prevMaskImportant = mask
         nIrrelevant = 0
 
     paramIdxSorted = paramIdxSortedAscending[::-1]
@@ -139,8 +149,20 @@ def _base_switch_on_params(metadata, paramImportanceCutoff, liteCutoff) -> np.nd
     newSubMask = np.zeros(nNonActive, dtype=np.bool_)
     newSubMask[idxSwitchOn] = True
 
-    newMask = prevMaskImportant | _expand_masked(newSubMask, ~mask)
+    newMask = mask | _expand_masked(newSubMask, ~mask)
     return newMask
+
+def switch_off_one_if_irrelevant(mask, importanceOnParams, normParamImportanceCutoff) -> np.ndarray[np.bool_]:
+    # Turn off the least important parameter if not relevant
+    importanceOnParams = np.where(importanceOnParams > 0., importanceOnParams, np.inf)
+    idxMin = np.argmin(importanceOnParams)
+
+    if importanceOnParams[idxMin] < normParamImportanceCutoff:
+        newMask = mask
+        newMask[idxMin] = False
+        return newMask
+    else:
+        return mask
 
 # ** end of helper jittable functions definition
 
@@ -251,7 +273,7 @@ class aTDVP(TDVPBase):
                 lite = self.calc_norm_lite(subS, subUpdate)
                 importanceOnParams = self.calc_importance_on_params(subS, subUpdate) / self.ElocVar
                 importanceOffParams = self.calc_importance_off_params(invSubS, subUpdate, S, F, mask) / self.ElocVar
-                metadata = Metadata(lite, mask, importanceOnParams, importanceOffParams)
+                metadata = Metadata(lite, mask.copy(), importanceOnParams, importanceOffParams)
 
                 # Calculate mask for the next iteration
                 self.nextMask = self.switch_off_params(metadata, subS, subF) if lite < self.liteCutoff else self.switch_on_params(metadata)
@@ -409,10 +431,8 @@ def NumpyBackend(diagonalizeOnDevice: bool):
                     nSwitchOff = search_n_switchoff(nSwitchOffTry, nActive - 1)
 
         if paramImportanceCutoff is not None:
-            # Switch off all irrelevant parameters
-            nIrrelevant = np.searchsorted(paramImportanceSorted, paramImportanceCutoff * lite)
-            nIrrelevant = min(nIrrelevant, nActive - 1)
-            nSwitchOff = max(nSwitchOff, nIrrelevant)
+            # If no parameter is going to be switched off, switch off the least important one if below threshold
+            return switch_off_one_if_irrelevant(mask, importanceOnParams, paramImportanceCutoff * lite)
 
         # Build and return mask for the chosen value of nSwitchOff
         idxSwitchOff = paramIdxSorted[:nSwitchOff]
@@ -432,7 +452,7 @@ def NumpyBackend(diagonalizeOnDevice: bool):
 
 # ** end function NumpyBackend
 
-
+# TODO catch up on changes made to numpy backend
 def NumbaBackend():
     global _expand_masked, _calc_norm_lite, _switch_on_params
 
