@@ -207,7 +207,7 @@ class aTDVP(TDVPBase):
     """
     def __init__(
         self, sampler, rhsPrefactor=1.j, diagonalShift=1e-4, pinvCutoff=1e-8, diagonalizeOnDevice=False,
-        liteCutoff = 0.01, paramImportanceCutoff = None, minSwitchOff = 3, mpiRoot = 0, backend = 'numpy',
+        liteCutoff=0.01, paramImportanceCutoff=None, importanceOnExact=False, minSwitchOff=3, mpiRoot=0, backend='numpy',
     ):
         self.sampler = sampler
         if rhsPrefactor != 1.j:
@@ -238,6 +238,7 @@ class aTDVP(TDVPBase):
             # atVMC-specific hyperparameters
             self.liteCutoff = liteCutoff
             self.paramImportanceCutoff = paramImportanceCutoff
+            self.importanceOnExact = importanceOnExact
             self.minSwitchOff = minSwitchOff
 
             # All parameters are active at the beginning
@@ -271,7 +272,12 @@ class aTDVP(TDVPBase):
 
                 # Calculate lite and parameter importance, normalized by the variance of local energy
                 lite = self.calc_norm_lite(subS, subUpdate)
-                importanceOnParams = self.calc_importance_on_params(subS, subUpdate) / self.ElocVar
+
+                if self.importanceOnExact:
+                    importanceOnParams = self.calc_importance_on_params_exact(subS, subF, invSubS, lite) / self.ElocVar
+                else:
+                    importanceOnParams = self.calc_importance_on_params(subS, subUpdate) / self.ElocVar
+
                 importanceOffParams = self.calc_importance_off_params(invSubS, subUpdate, S, F, mask) / self.ElocVar
                 metadata = Metadata(lite, mask.copy(), importanceOnParams, importanceOffParams)
 
@@ -326,6 +332,9 @@ class aTDVP(TDVPBase):
     def calc_importance_on_params(self, subS: np.ndarray, subUpdate: np.ndarray) -> np.ndarray:
         return self.backend['calc_importance_on_params'](subS, subUpdate)
 
+    def calc_importance_on_params_exact(self, subS: np.ndarray, subF: np.ndarray, invSubS: np.ndarray, lite):
+        return self.backend['calc_importance_on_params_exact'](subS, subF, invSubS, self.ElocVar, lite)
+
     def calc_importance_off_params(self, invSubS: np.ndarray, subUpdate: np.ndarray, S: np.ndarray, F: np.ndarray, mask: np.ndarray) -> np.ndarray:
         return self.backend['calc_importance_off_params'](invSubS, subUpdate, S, F, mask)
 
@@ -351,7 +360,7 @@ def NumpyBackend(diagonalizeOnDevice: bool):
             ev, V = np.linalg.eigh(S)
 
         invEv = np.where(ev > pinvCutoff, 1./ev, 0.)
-        
+
         # TODO Apply soft cutoff
         # regularizer = 1. / (1. + (pinvCutoff / ev))**6)
         # invEv *= regularizer
@@ -363,6 +372,49 @@ def NumpyBackend(diagonalizeOnDevice: bool):
 
     def _calc_importance_on_params(subS: np.ndarray, subUpdate: np.ndarray) -> np.ndarray:
         return np.diag(subS) * (subUpdate * subUpdate)
+
+    # TODO optimize
+    def _calc_importance_on_params_exact(S, F, invS, ElocVar, lite):
+        nActive = invS.shape[0]
+        idx = np.arange(nActive)
+
+        # Calculate subSs, i. e. an array containing all principal minors of S
+        subSs = np.array([
+            S[np.ix_(idx != k, idx != k)]
+            for k in range(nActive)
+        ])
+
+        # Build subInvSks, i. e. an array containing all principal minors of invS
+        subInvSks = np.array([
+            invS[np.ix_(idx != k, idx != k)]
+            for k in range(nActive)
+        ])
+
+        # Build Wks
+        Wks = np.array([
+            invS[idx != k][:, k]
+            for k in range(nActive)
+        ])
+
+        # Build subFs
+        subFs = np.array([
+            F[idx != k]
+            for k in range(nActive)
+        ])
+
+        # Calculate invSubSks
+        invSkk = np.diag(invS)
+        invSubSks = subInvSks - 1. / invSkk[:, None, None] * (Wks[:, :, None] * Wks[:, None, :].conj())
+
+        # Calculate update update of the remaining params if the k-th one were switched off
+        subUpdates = np.einsum("kij,kj->ki", invSubSks, subFs)
+
+        # Calculate lite for every
+        kLite = 1. - 1. / ElocVar * np.einsum("ki,kij,kj->k", subUpdates, subSs, subUpdates)
+
+        # Return lite decrease if the k-th parameter were switched off
+        return kLite - lite
+
 
     def _calc_importance_off_params(invSubS: np.ndarray, subUpdate: np.ndarray, S: np.ndarray, F: np.ndarray, mask: np.ndarray) -> np.ndarray:
         if np.all(mask):
@@ -445,6 +497,7 @@ def NumpyBackend(diagonalizeOnDevice: bool):
         "calc_norm_lite": _calc_norm_lite,
         "calc_update": _calc_update,
         "calc_importance_on_params": _calc_importance_on_params,
+        "calc_importance_on_params_exact": _calc_importance_on_params_exact,
         "calc_importance_off_params": _calc_importance_off_params,
         "switch_off_params": _switch_off_params,
         "switch_on_params": _switch_on_params,

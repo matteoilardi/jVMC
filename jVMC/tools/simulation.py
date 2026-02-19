@@ -92,6 +92,7 @@ class atVMCParams(BaseModel):
     pinvCutoff: float = Field(ge=0)
     liteCutoff: float = Field(ge=0)
     paramImportanceCutoff: Optional[float] = None
+    importanceOnExact: bool
     minSwitchOff: int = Field(ge=0)
     backend: str
 
