@@ -482,7 +482,7 @@ def NumpyBackend(diagonalizeOnDevice: bool):
                     # The threshold for nSwitchOff must be in the interval [nSwitchOffTry, nActive-1]
                     nSwitchOff = search_n_switchoff(nSwitchOffTry, nActive - 1)
 
-        if paramImportanceCutoff is not None:
+        if paramImportanceCutoff is not None and nSwitchOff == 0:
             # If no parameter is going to be switched off, switch off the least important one if below threshold
             return switch_off_one_if_irrelevant(mask, importanceOnParams, paramImportanceCutoff * lite)
 
