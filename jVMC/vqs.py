@@ -15,7 +15,9 @@ import jVMC.global_defs as global_defs
 from jVMC.nets import CpxRBM
 from jVMC.nets import RBM
 import jVMC.mpi_wrapper as mpi
+from jVMC.compression import EVDDecompressor
 
+from abc import ABC, abstractmethod
 from functools import partial
 import collections
 import time
@@ -112,11 +114,12 @@ class NQS:
         * ``seed``: Seed for the PRNG to initialize the network parameters.
     """
 
-    def __init__(self, net, 
+    def __init__(self, net,
+                        decompressor = None,
                         logarithmic=True,
-                        batchSize=1000, 
-                        seed=1234, 
-                        orbit=None, 
+                        batchSize=1000,
+                        seed=1234,
+                        orbit=None,
                         avgFun=jVMC.nets.sym_wrapper.avgFun_Coefficients_Exp):
         """Initializes NQS class.
         
@@ -171,11 +174,16 @@ class NQS:
                 self._isGenerator = True
         self.net = net
 
+        self.decompressor = decompressor
+
         self.batchSize = batchSize
 
         # Need to keep handles of jit'd functions to avoid recompilation
         self._eval_net_pmapd = global_defs.pmap_for_my_devices(self._eval, in_axes=(None, None, 0, None), static_broadcasted_argnums=(0, 3))
         self._get_gradients_pmapd = global_defs.pmap_for_my_devices(self._get_gradients, in_axes=(None, None, 0, None, None), static_broadcasted_argnums=(0, 3, 4))
+        self._get_c_gradients_pmapd = global_defs.pmap_for_my_devices(
+            self._get_c_gradients, in_axes=(None, None, None, 0, None, None), static_broadcasted_argnums=(0, 4, 5)
+        )
         self._append_gradients = global_defs.pmap_for_my_devices(lambda x, y: jnp.concatenate((x[:, :], 1.j * y[:, :]), axis=1), in_axes=(0, 0))
         self._get_gradients_dict_pmapd = global_defs.pmap_for_my_devices(self._get_gradients, in_axes=(None, None, 0, None, None), static_broadcasted_argnums=(0, 3, 4))
         self._append_gradients_dict = global_defs.pmap_for_my_devices(lambda x, y: tree_map(lambda a,b: jnp.concatenate((a[:, :], 1.j * b[:, :]), axis=1), x, y), in_axes=(0, 0))
@@ -187,7 +195,7 @@ class NQS:
     def init_net(self, s):
 
         if not self.initialized:
-    
+
             self.parameters = self.net.init(jax.random.PRNGKey(self.seed), s[0,0,...])
             self.realParams = False
             dtypes = [a.dtype for a in tree_flatten(self.parameters)[0]]
@@ -214,7 +222,6 @@ class NQS:
             self.paramShapes = [(p.size, p.shape) for p in tree_flatten(self.parameters["params"])[0]]
             self.netTreeDef = jax.tree_util.tree_structure(self.parameters["params"])
             self.numParameters = jnp.sum(jnp.array([p.size for p in tree_flatten(self.parameters["params"])[0]]))
-
             self.initialized = True
 
     # ** end init_net
@@ -267,6 +274,13 @@ class NQS:
         #return g[:s.shape[0]]
         return tree_map(lambda x: x[:s.shape[0]], g)
 
+    def _get_c_gradients(self, net, decompressor, params, s, batchSize, flat_grad):
+        class c_net:
+            def apply(c_params, arg):
+                delta_params = {"params": self._param_unflatten(decompressor(c_params["params"]))}
+                return net.apply(jax.tree_util.tree_map(lambda x, y: x + y, params, delta_params), arg)
+
+        return self._get_gradients(c_net, decompressor.zeros(), s, batchSize, flat_grad)
 
     def gradients(self, s):
         """Compute gradients of logarithmic wave function.
@@ -288,6 +302,10 @@ class NQS:
 
     # **  end def gradients
 
+    def c_gradients(self, s):
+        self.init_net(s)
+        # Pass flat_gradient: we're computing a complex-valued gradient w. r. t. a real parameter (real and imag parts separated)
+        return self._get_c_gradients_pmapd(self.net, self.decompressor, self.parameters, s, self.batchSize, flat_gradient)
 
     def gradients_dict(self, s):
         """Compute gradients of logarithmic wave function and return them as dictionary.
@@ -489,4 +507,7 @@ class NQS:
         #                        **unfreeze(self.parameters.pop("params")[0]),
         #                        "params": unfreeze(val)
         #                        })
+
+    def assign_decompressor(self, decompressor):
+        self.decompressor = decompressor
 

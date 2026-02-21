@@ -18,6 +18,10 @@ class IOConfig(BaseModel):
 
 # ================ ANSATZ ==================
 
+class RBMParams(BaseModel):
+    numHidden: int
+    bias: bool
+
 class CpxRBMParams(BaseModel):
     numHidden: int
     bias: bool
@@ -42,6 +46,7 @@ class CpxVisionTransformerParams(BaseModel):
 class AnsatzBase(BaseModel):
     def build(self):
         NETS = {
+            "RBM": jVMC.nets.rbm.RBM,
             "CpxRBM": jVMC.nets.rbm.CpxRBM,
             "CpxRBM_TI": jVMC.nets.rbm.CpxRBM_TI,
             "CpxVisionTransformer": jVMC.nets.transformer.CpxVisionTransformer,
@@ -50,6 +55,10 @@ class AnsatzBase(BaseModel):
         if self.net not in NETS:
             raise ValueError(f"Net type: {self.net} is not supported")
         return NETS[self.net](**self.parameters.model_dump())
+
+class RBMConfig(AnsatzBase):
+    net: Literal["RBM"]
+    parameters: RBMParams
 
 class CpxRBMConfig(AnsatzBase):
     net: Literal["CpxRBM"]
@@ -64,7 +73,7 @@ class CpxVisionTransformerConfig(AnsatzBase):
     parameters: CpxVisionTransformerParams
 
 AnsatzConfig = Annotated[
-    Union[CpxRBMConfig, CpxRBM_TIConfig, CpxVisionTransformerConfig],
+    Union[RBMConfig, CpxRBMConfig, CpxRBM_TIConfig, CpxVisionTransformerConfig],
     Field(discriminator="net")
 ]
 
@@ -101,6 +110,11 @@ class minSRParams(BaseModel):
     pinvTol: float = Field(ge=0)
     diagonalizeOnDevice: bool
 
+class ctVMCParams(BaseModel):
+    pinvCutoff: float = Field(ge=0)
+    decompressorCutoff: float = Field(ge=0)
+    diagonalizeOnDevice: bool
+
 class BaseEqOfMotion(BaseModel):
     def build(self, sampler):
         if self.mode == "SR":
@@ -111,6 +125,8 @@ class BaseEqOfMotion(BaseModel):
             return jVMC.util.aTDVP(sampler, rhsPrefactor=1.j, **self.parameters.model_dump(), mpiRoot=0)
         elif self.mode == "minSR":
             return jVMC.util.MinSR(sampler, **self.parameters.model_dump())
+        elif self.mode == "ctVMC":
+            return jVMC.util.cTDVP(sampler, rhsPrefactor=1.j, **self.parameters.model_dump(), mpiRoot=0)
         else:
             raise ValueError(f"Algorithm {self.mode} is not supported")
 
@@ -131,8 +147,12 @@ class minSRConfig(BaseEqOfMotion):
     mode: Literal["minSR"]
     parameters: minSRParams
 
+class ctVMCConfig(BaseEqOfMotion):
+    mode: Literal["ctVMC"]
+    parameters: ctVMCParams
+
 EqOfMotionConfig = Annotated[
-    Union[SRConfig, tVMCConfig, atVMCConfig, minSRConfig],
+    Union[SRConfig, tVMCConfig, atVMCConfig, minSRConfig, ctVMCConfig],
     Field(discriminator="mode"),
 ]
 
