@@ -275,12 +275,12 @@ class NQS:
         return tree_map(lambda x: x[:s.shape[0]], g)
 
     def _get_c_gradients(self, net, decompressor, params, s, batchSize, flat_grad):
-        class c_net:
-            def apply(c_params, arg):
-                delta_params = {"params": self._param_unflatten(decompressor(c_params["params"]))}
-                return net.apply(jax.tree_util.tree_map(lambda x, y: x + y, params, delta_params), arg)
 
-        return self._get_gradients(c_net, decompressor.zeros(), s, batchSize, flat_grad)
+        gradients =  self._get_gradients(net, params, s, batchSize, flat_grad)
+
+        return decompressor.apply_transposed_jacobian_at_zero(gradients)
+        # return eval_batched(batchSize, decompressor.apply_transposed_jacobian_at_zero, gradients)
+        # TODO use eval_batched if the jacobian of the decompressor is not implemented explicitly, but obtained with jvp instead
 
     def gradients(self, s):
         """Compute gradients of logarithmic wave function.
@@ -304,8 +304,7 @@ class NQS:
 
     def c_gradients(self, s):
         self.init_net(s)
-        # Pass flat_gradient: we're computing a complex-valued gradient w. r. t. a real parameter (real and imag parts separated)
-        return self._get_c_gradients_pmapd(self.net, self.decompressor, self.parameters, s, self.batchSize, flat_gradient)
+        return self._get_c_gradients_pmapd(self.net, self.decompressor, self.parameters, s, self.batchSize, self.flat_gradient_function)
 
     def gradients_dict(self, s):
         """Compute gradients of logarithmic wave function and return them as dictionary.
