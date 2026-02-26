@@ -115,7 +115,8 @@ class NQS:
     """
 
     def __init__(self, net,
-                        decompressor = None,
+                        decompressor=None,
+                        frozenLayers=None,
                         logarithmic=True,
                         batchSize=1000,
                         seed=1234,
@@ -176,6 +177,19 @@ class NQS:
 
         self.decompressor = decompressor
 
+        if isinstance(frozenLayers, collections.abc.Iterable):
+            if isinstance(frozenLayers, (str, bytes)):
+                frozenLayers = [frozenLayers]
+            elif all([isinstance(s, str) for s in frozenLayers]):
+                pass
+            else:
+                raise TypeError("Invalid frozenLayers specification: should be a str or a list thereof")
+        elif frozenLayers is None:
+            pass
+        else:
+            raise TypeError("Invalid frozenLayers specification: should be a str or a list thereof")
+        self.frozenLayers = frozenLayers
+
         self.batchSize = batchSize
 
         # Need to keep handles of jit'd functions to avoid recompilation
@@ -187,6 +201,10 @@ class NQS:
         self._append_gradients = global_defs.pmap_for_my_devices(lambda x, y: jnp.concatenate((x[:, :], 1.j * y[:, :]), axis=1), in_axes=(0, 0))
         self._get_gradients_dict_pmapd = global_defs.pmap_for_my_devices(self._get_gradients, in_axes=(None, None, 0, None, None), static_broadcasted_argnums=(0, 3, 4))
         self._append_gradients_dict = global_defs.pmap_for_my_devices(lambda x, y: tree_map(lambda a,b: jnp.concatenate((a[:, :], 1.j * b[:, :]), axis=1), x, y), in_axes=(0, 0))
+        self._select_active_grads_pmapd = global_defs.pmap_for_my_devices(
+            lambda g, idx: jnp.take(g, idx, axis=-1),
+            in_axes=(0, None),
+        )
         self._sample_jitd = {}
 
     # **  end def __init__
@@ -222,8 +240,35 @@ class NQS:
             self.paramShapes = [(p.size, p.shape) for p in tree_flatten(self.parameters["params"])[0]]
             self.netTreeDef = jax.tree_util.tree_structure(self.parameters["params"])
             self.numParameters = jnp.sum(jnp.array([p.size for p in tree_flatten(self.parameters["params"])[0]]))
-            self.initialized = True
 
+            # Initialize frozenMask
+            self.frozenMask = None
+            self.activeParamIdx = None
+            if self.frozenLayers is not None:
+                flat_param_dict = flax.traverse_util.flatten_dict(self.parameters)
+                self.frozenLayers = [
+                    layer
+                    for layer in flat_param_dict
+                    if any(layer[1].startswith(prefix) for prefix in self.frozenLayers)
+                    # NOTE does only support freezing top-level layers
+                ]
+
+                flat_mask_dict = {
+                    layer: jnp.ones_like(array, dtype=bool) * (layer in self.frozenLayers)
+                    for layer, array in flat_param_dict.items()
+                }
+
+                mask_dict = flax.traverse_util.unflatten_dict(flat_mask_dict)
+
+                if not self.realParams:
+                    self.frozenMask = jnp.concatenate([jnp.concatenate([p.ravel(), p.ravel()]) for p in tree_flatten(mask_dict)[0]])
+                else:
+                    self.frozenMask = jnp.concatenate([p.ravel() for p in tree_flatten(mask_dict)[0]])
+
+                self.activeParamIdx = jnp.where(~self.frozenMask)[0]
+
+            self.initialized = True
+            #  end of frozenMask initialization
     # ** end init_net
 
 
@@ -295,10 +340,13 @@ class NQS:
             with respect to each variational parameter :math:`\\theta_k` for each \
             input configuration :math:`s`.
         """
-        
+
         self.init_net(s)
 
-        return self._get_gradients_pmapd(self.net, self.parameters, s, self.batchSize, self.flat_gradient_function)
+        gradients = self._get_gradients_pmapd(self.net, self.parameters, s, self.batchSize, self.flat_gradient_function)
+        if self.frozenLayers is not None:
+            gradients = self._select_active_grads_pmapd(gradients, self.activeParamIdx)
+        return gradients
 
     # **  end def gradients
 
@@ -402,14 +450,13 @@ class NQS:
         """Update variational parameters.
         
         Sets new values of all variational parameters by adding given values.
-        If parameters are not initialized, parameters are set to ``deltaP``.
         
         Args:
             * ``deltaP``: Values to be added to variational parameters.
         """
 
         if not self.initialized:
-            self.set_parameters(deltaP)
+            raise RuntimeError("Error in NQS.update_parameters(): Network not initialized. Evaluate net on example input for initialization.")
 
         # Compute new parameters
         newParams = jax.tree_util.tree_map(
@@ -456,7 +503,7 @@ class NQS:
             else:
                 PTreeShape.append(P[start:start + s[0]].reshape(s[1]))
                 start += s[0]
-        
+
         # Return unflattened parameters
         return tree_unflatten(self.netTreeDef, PTreeShape)
 
@@ -509,4 +556,14 @@ class NQS:
 
     def assign_decompressor(self, decompressor):
         self.decompressor = decompressor
+
+
+    def expand_update_to_frozen(self, deltaP):
+        if self.frozenLayers is None:
+            raise RuntimeError("Called expand_to_frozen on a vqs that doesn't have frozen layers")
+
+        length = self.numParameters
+        if not self.realParams:
+            length *= 2
+        return jnp.zeros(length, dtype=deltaP.dtype).at[~self.frozenMask].set(deltaP)
 

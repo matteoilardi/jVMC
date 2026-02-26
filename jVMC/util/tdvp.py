@@ -324,4 +324,6 @@ class TDVP:
 
                     self.S, _ = self.get_tdvp_equation(Eloc, sampleGradients)
 
+        if psi.frozenLayers is not None:
+            update = psi.expand_update_to_frozen(update)
         return update

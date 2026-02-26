@@ -3,12 +3,13 @@ import jax.numpy as jnp
 import jVMC
 
 from enum import Enum
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, List, Literal, Optional, Union
 
 import tomli as tomllib
 from pydantic import BaseModel, Field, model_validator, ValidationError
 
 import sys
+import pprint
 
 # ================== IO ====================
 
@@ -44,6 +45,8 @@ class CpxVisionTransformerParams(BaseModel):
         return self
 
 class AnsatzBase(BaseModel):
+    frozenLayers: Optional[List[str] | str] = None
+
     def build(self):
         NETS = {
             "RBM": jVMC.nets.rbm.RBM,
@@ -54,7 +57,7 @@ class AnsatzBase(BaseModel):
 
         if self.net not in NETS:
             raise ValueError(f"Net type: {self.net} is not supported")
-        return NETS[self.net](**self.parameters.model_dump())
+        return NETS[self.net](**self.parameters.model_dump()), self.frozenLayers
 
 class RBMConfig(AnsatzBase):
     net: Literal["RBM"]
@@ -279,8 +282,8 @@ def main():
     outputManager = jVMC.util.output_manager.OutputManager(config.IO.output)
 
     # Variational quantum state
-    net = config.ansatz.build()
-    psi = jVMC.vqs.NQS(net, seed=1)
+    net, frozenLayers = config.ansatz.build()
+    psi = jVMC.vqs.NQS(net, frozenLayers=frozenLayers, seed=1)
 
     # Physical system
     L = config.physical_system.L
@@ -288,12 +291,17 @@ def main():
 
     # Initialize network from checkpoint if provided
     if inputManager is not None:
-        print("Initializing from checkpoint")
+        print("Initializing from checkpoint\n")
         _, checkpoint_params = inputManager.get_network_checkpoint()
 
         dummy_spins = jnp.zeros((L,))
         psi.init_net(dummy_spins[None, None, :]) # Add two leading axes for device and batch dimensions
         psi.set_parameters(checkpoint_params)
+
+        if psi.frozenLayers is not None:
+            print("Frozen layers")
+            pprint.pprint(psi.frozenLayers)
+            print()
     del inputManager
 
     # Observables
@@ -325,7 +333,6 @@ def main():
     for step in range(N_STEPS):
         updatedParams, _ = stepper.step(0, tdvpEquation, psi.get_parameters(), hamiltonian=hamiltonian, psi=psi, outp=outputManager)
         psi.set_parameters(updatedParams)
-
         energy_per_spin = jax.numpy.real(tdvpEquation.ElocMean0) / L
         var_energy_per_spin = tdvpEquation.ElocVar0 / L
         print(f"Step: {step}\tEnergy: {energy_per_spin}")
