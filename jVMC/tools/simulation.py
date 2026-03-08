@@ -162,26 +162,46 @@ EqOfMotionConfig = Annotated[
 
 # ================ INTEGRATOR ===================
 
-class StepperType(str, Enum):
-    Euler = "Euler"
-    Heun = "Heun"
-
-class StepperParams(BaseModel):
+class EulerParams(BaseModel):
     timeStep: float = Field(gt=0)
+
+class HeunParams(BaseModel):
+    timeStep: float = Field(gt=0)
+
+class AdaptiveHeunParams(BaseModel):
+    timeStep: float = Field(gt=0)
+    tol: float = Field(gt=0)
+    maxStep: float = Field(gt=0)
+
+class BaseIntegrator(BaseModel):
     nSteps: int = Field(gt=0)
 
-class StepperConfig(BaseModel):
-    mode: StepperType
-    parameters: StepperParams
-
     def build(self):
-        if self.mode == StepperType.Euler:
-            return jVMC.util.Euler(timeStep=self.parameters.timeStep)
-        elif self.mode == StepperType.Heun:
-            return jVMC.util.Heun(timeStep=self.parameters.timeStep)
+        if self.mode == "Euler":
+            return jVMC.util.Euler(**self.parameters.model_dump())
+        elif self.mode == "Heun":
+            return jVMC.util.Heun(**self.parameters.model_dump())
+        elif self.mode == "AdaptiveHeun":
+            return jVMC.util.AdaptiveHeun(**self.parameters.model_dump())
         else:
-            raise ValueError(f"Stepper: {self.stepper} is not supported")
+            raise ValueError(f"Stepper {self.mode} is not supported")
 
+class EulerConfig(BaseIntegrator):
+    mode: Literal["Euler"]
+    parameters: EulerParams
+
+class HeunConfig(BaseIntegrator):
+    mode: Literal["Heun"]
+    parameters: HeunParams
+
+class AdaptiveHeunConfig(BaseIntegrator):
+    mode: Literal["AdaptiveHeun"]
+    parameters: AdaptiveHeunParams
+
+IntegratorConfig = Annotated[
+    Union[EulerConfig, HeunConfig, AdaptiveHeunConfig],
+    Field(discriminator='mode'),
+]
 
 # ================ SAMPLER =======================
 
@@ -241,7 +261,7 @@ class Config(BaseModel):
     ansatz: AnsatzConfig
     physical_system: PhysicalSystemConfig
     eq_of_motion: EqOfMotionConfig
-    integrator: StepperConfig
+    integrator: IntegratorConfig
     sampler: SamplerConfig
     measurements: MeasurementConfig
 
@@ -331,7 +351,7 @@ def main():
 
     # Integrator
     stepper = config.integrator.build()
-    N_STEPS = config.integrator.parameters.nSteps
+    N_STEPS = config.integrator.nSteps
 
     # Measurement samples
     MEASUREMENT_SAMPLES = config.measurements.measurementSamples
