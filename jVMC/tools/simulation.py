@@ -292,7 +292,7 @@ def main():
     # Initialize network from checkpoint if provided
     if inputManager is not None:
         print("Initializing from checkpoint\n")
-        _, checkpoint_params = inputManager.get_network_checkpoint()
+        initial_time, checkpoint_params = inputManager.get_network_checkpoint()
 
         dummy_spins = jnp.zeros((L,))
         psi.init_net(dummy_spins[None, None, :]) # Add two leading axes for device and batch dimensions
@@ -302,6 +302,9 @@ def main():
             print("Frozen layers")
             pprint.pprint(psi.frozenLayers)
             print()
+    else:
+        initial_time = 0
+
     del inputManager
 
     # Observables
@@ -310,11 +313,15 @@ def main():
         hamiltonian.add(jVMC.operator.scal_opstr(-1., (jVMC.operator.Sz(l), jVMC.operator.Sz((l + 1) % L))))
         hamiltonian.add(jVMC.operator.scal_opstr(g, (jVMC.operator.Sx(l), )))
 
-    magnetization = jVMC.operator.BranchFreeOperator()
+    Mx = jVMC.operator.BranchFreeOperator()
+    My = jVMC.operator.BranchFreeOperator()
+    Mz = jVMC.operator.BranchFreeOperator()
     for l in range(L):
-        magnetization.add(jVMC.operator.scal_opstr(1./L, (jVMC.operator.Sx(l),)))
+        Mx.add(jVMC.operator.scal_opstr(1./L, (jVMC.operator.Sx(l),)))
+        My.add(jVMC.operator.scal_opstr(1./L, (jVMC.operator.Sy(l),)))
+        Mz.add(jVMC.operator.scal_opstr(1./L, (jVMC.operator.Sz(l),)))
 
-    observables = {"magnetization": magnetization, "energy": hamiltonian}
+    observables = {"Mx": Mx, "My": My, "Mz": Mz, "energy": hamiltonian}
 
     # Sampler
     sampler = config.sampler.build(psi, L)
@@ -341,11 +348,12 @@ def main():
         measurements["energy"]["mean(time ev samples)"] = energy_per_spin
         measurements["energy"]["variance(time ev samples)"] = var_energy_per_spin
 
-        outputManager.write_observables(step, **measurements)
-        outputManager.write_metadata(step, **tdvpEquation.metadata)
+        time = initial_time + stepper.dt * (step + 1)
+        outputManager.write_observables(time, **measurements)
+        outputManager.write_metadata(time, **tdvpEquation.metadata)
 
         if step == N_STEPS - 1:
-            outputManager.write_network_checkpoint(step, psi.get_parameters())
+            outputManager.write_network_checkpoint(time, psi.get_parameters())
 
     outputManager.print_timings()
     for name, value in outputManager.timings.items():
