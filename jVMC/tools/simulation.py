@@ -210,6 +210,7 @@ class SamplerType(str, Enum):
 
 class UpdateProposerType(str, Enum):
     spin_flip_Z2 = "spin_flip_Z2"
+    spin_flip = "spin_flip"
 
 class UpdateProposerConfig(BaseModel):
     updateProposer: UpdateProposerType
@@ -217,6 +218,8 @@ class UpdateProposerConfig(BaseModel):
     def build(self):
         if self.updateProposer == UpdateProposerType.spin_flip_Z2:
             return jVMC.sampler.propose_spin_flip_Z2
+        if self.updateProposer == UpdateProposerType.spin_flip:
+            return jVMC.sampler.propose_spin_flip
         else:
             raise ValueError(f"Update proposer: {self.updateProposer} not supported")
 
