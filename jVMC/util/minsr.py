@@ -25,8 +25,9 @@ class MinSR:
         * ``diagonalizeOnDevice``: Choose whether to diagonalize :math:`S` on GPU or CPU.
     """
 
-    def __init__(self, sampler, pinvTol=1e-14, diagonalShift=0., diagonalizeOnDevice=True):
+    def __init__(self, sampler, rhsPrefactor=1., pinvTol=1e-14, diagonalShift=0., diagonalizeOnDevice=True):
         self.sampler = sampler
+        self.rhsPrefactor = rhsPrefactor
         self.pinvTol = pinvTol
         self.diagonalShift = diagonalShift
 
@@ -63,7 +64,7 @@ class MinSR:
 
             eloc_all = mpi.gather(eloc._data).reshape((-1,))
             gradients_all = mpi.gather(gradients._data)
-            update = - gradients_all.conj().T @ T_inv @ eloc_all
+            update = - self.rhsPrefactor * gradients_all.conj().T @ T_inv @ eloc_all
 
         else:
             # NOTE gradients._data is different for each node and sharded across devices
@@ -79,7 +80,7 @@ class MinSR:
             eloc_all = mpi.gather(eloc._data).reshape((-1,))
             eloc_all = jnp.concatenate([jnp.real(eloc_all), jnp.imag(eloc_all)], axis=0)
 
-            update = - gradients_all.T @ T_inv @ eloc_all
+            update = - self.rhsPrefactor * gradients_all.T @ T_inv @ eloc_all
 
         return update
 

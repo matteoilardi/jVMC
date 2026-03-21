@@ -112,6 +112,7 @@ class minSRParams(BaseModel):
     diagonalShift: float = Field(ge=0)
     pinvTol: float = Field(ge=0)
     diagonalizeOnDevice: bool
+    time: Optional[str] = "imag"
 
 class ctVMCParams(BaseModel):
     pinvCutoff: float = Field(ge=0)
@@ -127,7 +128,16 @@ class BaseEqOfMotion(BaseModel):
         elif self.mode == "atVMC":
             return jVMC.util.aTDVP(sampler, rhsPrefactor=1.j, **self.parameters.model_dump(), mpiRoot=0)
         elif self.mode == "minSR":
-            return jVMC.util.MinSR(sampler, **self.parameters.model_dump())
+            parameters = self.parameters.model_dump()
+            time = parameters.pop("time")
+            if time == "real":
+                parameters["rhsPrefactor"] = 1.j
+            elif time == "imag":
+                parameters["rhsPrefactor"] = 1.
+            else:
+                raise ValueError(f"Allowed values for time are 'real' and 'imag', got '{time}'")
+
+            return jVMC.util.MinSR(sampler, **parameters)
         elif self.mode == "ctVMC":
             return jVMC.util.cTDVP(sampler, rhsPrefactor=1.j, **self.parameters.model_dump(), mpiRoot=0)
         else:
