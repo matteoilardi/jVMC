@@ -85,6 +85,8 @@ class TDVPBase(ABC):
 
         psi.set_parameters(tmpParameters)
 
+        if psi.frozenLayers is not None:
+            update = psi.expand_update_to_frozen(update)
         return update
 
     @abstractmethod
