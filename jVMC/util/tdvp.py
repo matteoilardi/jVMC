@@ -100,8 +100,30 @@ class TDVP:
         self.crossValidation = crossValidation
 
     def _get_tdvp_error(self, update): # NOTE see arXiv:1912.08828
+        return 1 - 1. / self.ElocVar0 * (update @ self.S @ update)
+        #return jnp.abs(1. + jnp.real(update.dot(self.S0.dot(update)) - 2. * jnp.real(update.dot(self.F0))) / self.ElocVar0)
 
-        return jnp.abs(1. + jnp.real(update.dot(self.S0.dot(update)) - 2. * jnp.real(update.dot(self.F0))) / self.ElocVar0)
+    def _get_lite_contribution_by_layer(self, psi, update):
+
+        result = {}
+        for layer, mask in psi.get_layer_masks().items():
+            in_update = update * mask
+            contribution = 1. / self.ElocVar0 * (in_update @ self.S @ update)
+            result["lite_contribution_" + layer] = contribution
+
+        return result
+
+    def _get_metric_contribution_by_layer(self, psi):
+        """Returns the square norm of the layer projections of S eigenvectors"""
+
+        result = {}
+        # Remember: eigenvector components are stored across rows (i.e. in a column) of the eigenvector matrix
+        for layer, mask in psi.get_layer_masks().items():
+            projected_eigvecs = self.V * mask[:, None]
+            norms = np.square(projected_eigvecs).sum(axis=0)
+            result["metric_contribution_" + layer] = norms @ self.ev / np.sum(self.ev)
+
+        return result
 
     def get_residuals(self):
 
@@ -303,6 +325,14 @@ class TDVP:
                     "SNR": self.snr, 
                     "spectrum": self.ev,
                 }
+
+                if psi.frozenLayers is None:
+                    self.metadata.update(
+                        self._get_lite_contribution_by_layer(psi, update)
+                    )
+                    self.metadata.update(
+                        self._get_metric_contribution_by_layer(psi)
+                    )
 
                 if self.crossValidation:
 

@@ -241,30 +241,25 @@ class NQS:
             self.netTreeDef = jax.tree_util.tree_structure(self.parameters["params"])
             self.numParameters = jnp.sum(jnp.array([p.size for p in tree_flatten(self.parameters["params"])[0]]))
 
+            # Layer names
+            self._init_layer_names()
+
+            # Parameter masks for top-level layers of the net
+            self._layer_masks = None
+
             # Initialize frozenMask
             self.frozenMask = None
             self.activeParamIdx = None
+
             if self.frozenLayers is not None:
-                flat_param_dict = flax.traverse_util.flatten_dict(self.parameters)
-                self.frozenLayers = [
-                    layer
-                    for layer in flat_param_dict
-                    if any(layer[1].startswith(prefix) for prefix in self.frozenLayers)
-                    # NOTE does only support freezing top-level layers
-                ]
+                for layer in self.frozenLayers:
+                    if layer not in self.layer_names:
+                        raise ValueError(f"Unknown layer cannot be frozen: {layer}")
 
-                flat_mask_dict = {
-                    layer: jnp.ones_like(array, dtype=bool) * (layer in self.frozenLayers)
-                    for layer, array in flat_param_dict.items()
-                }
+                layerMasks = self.get_layer_masks()
+                frozenLayersMasks = [mask for layer, mask in layerMasks.items() if layer in self.frozenLayers]
 
-                mask_dict = flax.traverse_util.unflatten_dict(flat_mask_dict)
-
-                if not self.realParams:
-                    self.frozenMask = jnp.concatenate([jnp.concatenate([p.ravel(), p.ravel()]) for p in tree_flatten(mask_dict)[0]])
-                else:
-                    self.frozenMask = jnp.concatenate([p.ravel() for p in tree_flatten(mask_dict)[0]])
-
+                self.frozenMask = np.logical_or.reduce(frozenLayersMasks)
                 self.activeParamIdx = jnp.where(~self.frozenMask)[0]
 
             self.initialized = True
@@ -565,5 +560,56 @@ class NQS:
         length = self.numParameters
         if not self.realParams:
             length *= 2
-        return jnp.zeros(length, dtype=deltaP.dtype).at[~self.frozenMask].set(deltaP)
+        return jnp.zeros(length, dtype=deltaP.dtype).at[self.activeParamIdx].set(deltaP)
+
+    def get_flat_params_dict(self):
+        return flax.traverse_util.flatten_dict(self.parameters)
+
+    def _init_layer_names(self):
+        flat_params_dict = self.get_flat_params_dict()
+
+        self.layer_names = set(
+            sublayer_key[1].split('_')[0]
+            for sublayer_key in flat_params_dict
+        )
+
+    def get_layer_masks(self):
+        if self._layer_masks is None:
+
+            flat_params_dict = self.get_flat_params_dict()
+
+            sublayer_paths_by_layer = {}
+            for name in self.layer_names:
+                sublayer_paths_by_layer[name] = [
+                    path
+                    for path in flat_params_dict
+                    if path[1].startswith(name)
+                ]
+
+            self._layer_masks = {
+                name: self._get_parameter_mask(flat_params_dict, sublayer_paths)
+                for name, sublayer_paths in sublayer_paths_by_layer.items()
+            }
+
+        return self._layer_masks
+
+
+    def _get_parameter_mask(self, flat_params_dict, sublayer_paths):
+        mask_tree = flax.traverse_util.unflatten_dict({
+            sublayer_path: np.ones_like(array, dtype=bool) * (sublayer_path in sublayer_paths)
+            for sublayer_path, array in flat_params_dict.items()
+        })
+
+        if not self.realParams:
+            mask = jnp.concatenate([
+                jnp.concatenate([p.ravel(), p.ravel()])
+                for p in jax.tree_util.tree_flatten(mask_tree)[0]
+            ])
+        else:
+            mask = jnp.concatenate([
+                p.ravel()
+                for p in jax.tree_util.tree_flatten(mask_tree)[0]
+            ])
+
+        return np.array(mask)
 
